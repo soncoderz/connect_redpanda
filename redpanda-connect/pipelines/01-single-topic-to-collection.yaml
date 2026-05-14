@@ -1,0 +1,42 @@
+# ============================================================
+# PIPELINE 01: Đọc 1 topic → lưu vào 1 collection MongoDB
+# Use-case: Đơn giản nhất, chuyển dữ liệu 1-1 từ Kafka sang DB
+# ============================================================
+
+input:
+  # Cấu hình nguồn vào
+  kafka:
+    addresses:
+      - redpanda:9092 # Địa chỉ máy chủ Kafka
+    topics:
+      - users         # Chỉ quan tâm và đọc duy nhất topic 'users'
+    consumer_group: connect-01-users-group # Nhóm tiêu thụ riêng biệt
+    start_from_oldest: true # Bắt đầu đọc từ tin nhắn cũ nhất
+
+pipeline:
+  # Khối xử lý dữ liệu ở giữa
+  processors:
+    # mapping: Dùng ngôn ngữ Bloblang để thêm thông tin trước khi lưu
+    - mapping: |
+        # root = this: Copy toàn bộ nội dung tin nhắn ban đầu
+        root = this
+        # Bổ sung trường 'savedAt' lưu thời gian xử lý
+        root.savedAt = now()
+        # Bổ sung trường 'source' để biết ai đã lưu tin nhắn này
+        root.source   = "redpanda-connect"
+        
+        # Lấy các thông tin hệ thống của Kafka đưa vào dữ liệu
+        root.kafka_topic     = @kafka_topic     # Tên topic
+        root.kafka_partition = @kafka_partition # Phân vùng
+        root.kafka_offset    = @kafka_offset    # Offset (số thứ tự)
+
+output:
+  # Cấu hình nơi xuất dữ liệu ra
+  mongodb:
+    url: mongodb://host.docker.internal:27017 # Địa chỉ MongoDB
+    database: app_db          # Tên cơ sở dữ liệu
+    collection: users         # Tên collection sẽ lưu vào
+    operation: insert-one     # Chế độ: chèn từng bản ghi
+    document_map: |
+      # Nội dung đem đi chèn chính là dữ liệu đã xử lý ('root' ở trên)
+      root = this

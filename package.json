@@ -1,0 +1,18 @@
+{
+  "name": "connect_redpanda",
+  "version": "1.0.0",
+  "description": "Demo Node.js + Redpanda + Redpanda Connect + MongoDB",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "node src/server.js",
+    "produce": "node scripts/test-produce.js",
+    "consume": "node src/kafka/consumer.js",
+    "test:all": "node scripts/test-all.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "kafkajs": "^2.2.4"
+  }
+}

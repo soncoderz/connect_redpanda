@@ -1,0 +1,187 @@
+# ============================================================
+# PIPELINE MASTER: Pipeline tổng hợp mạnh mẽ nhất
+# Chịu trách nhiệm nhận mọi sự kiện từ Kafka và rẽ nhánh thông minh
+# ============================================================
+
+input:
+  # Khối nhận dữ liệu đầu vào
+  kafka:
+    addresses:
+      - redpanda:9092 # Địa chỉ Kafka broker
+    topics:
+      # Lắng nghe đồng thời 5 topic khác nhau
+      - users
+      - orders
+      - payments
+      - crud-events
+      - appointment-events
+    consumer_group: connect-master-group # Tên nhóm tiêu thụ
+    start_from_oldest: true # Đọc từ đầu nếu chưa có lịch sử đọc
+
+pipeline:
+  threads: 2 # Xử lý đa luồng (2 luồng song song) để tăng tốc độ
+  processors:
+    # BƯỚC 1: Kiểm tra tính hợp lệ (Validate) bằng ngôn ngữ Bloblang
+    - bloblang: |
+        # Khai báo biến kiểm tra: tin nhắn phải có 'id' hoặc '_id'
+        let hasId    = this.id != null || this._id != null
+        # Biến kiểm tra: tin nhắn phải có 'eventType' và không được rỗng
+        let hasEvent = this.eventType != null && this.eventType != ""
+        
+        # 'root = this' nghĩa là giữ nguyên dữ liệu tin nhắn gốc
+        root = this
+        
+        # Thêm các trường metadata (siêu dữ liệu) ẩn (bắt đầu bằng _)
+        # Trường này dùng để đánh dấu xem tin nhắn có hợp lệ không (true/false)
+        root._meta.valid   = $hasId && $hasEvent
+        # Lưu lại tên topic xuất phát của tin nhắn này
+        root._meta.topic   = @kafka_topic
+        # Lưu lại thời gian xử lý
+        root._meta.savedAt = now()
+        root._meta.source  = "redpanda-connect-master"
+
+    # BƯỚC 2: Loại bỏ tin nhắn lỗi
+    - bloblang: |
+        # Nếu tin nhắn hợp lệ (_meta.valid == true) thì giữ lại (root = this)
+        root = if this._meta.valid {
+          this
+        } else {
+          # Nếu không hợp lệ, gọi hàm deleted() để loại bỏ tin nhắn này khỏi luồng
+          deleted()
+        }
+
+    # BƯỚC 3: Bổ sung thêm thông tin định danh pipeline
+    - mapping: |
+        root = this
+        root._meta.pipeline = "master-v1"
+
+output:
+  # Khối xuất dữ liệu ra ngoài
+  # Switch: rẽ nhánh dữ liệu dựa vào điều kiện (giống lệnh switch/case trong lập trình)
+  switch:
+    cases:
+      # TRƯỜNG HỢP 1: CRUD - Thêm mới (Insert)
+      # Nếu đến từ topic 'crud-events' VÀ có thao tác là 'add'
+      - check: 'this._meta.topic == "crud-events" && this.eventType == "add"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: resources
+            operation: insert-one # Lệnh thêm 1 tài liệu mới
+            document_map: |
+              root = this # Chèn toàn bộ nội dung tin nhắn hiện tại
+              root._id = this.id # Dùng id từ event làm _id để update/delete tìm đúng bản ghi
+
+      # TRƯỜNG HỢP 2: CRUD - Cập nhật (Update)
+      # Nếu đến từ topic 'crud-events' VÀ có thao tác là 'update'
+      - check: 'this._meta.topic == "crud-events" && this.eventType == "update"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: resources
+            operation: update-one # Lệnh cập nhật 1 tài liệu có sẵn
+            upsert: false # Nếu không tìm thấy thì KHÔNG tạo mới
+            filter_map: |
+              # Điều kiện để tìm ra tài liệu cần update: _id trong DB phải bằng id gửi lên
+              root._id = this.id
+            document_map: |
+              # Sử dụng toán tử $set của MongoDB để cập nhật các trường mới
+              root."$set" = this
+
+      # TRƯỜNG HỢP 3: CRUD - Xóa (Delete)
+      # Nếu đến từ topic 'crud-events' VÀ có thao tác là 'delete'
+      - check: 'this._meta.topic == "crud-events" && this.eventType == "delete"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: resources
+            operation: delete-one # Lệnh xóa 1 tài liệu
+            filter_map: |
+              # Điều kiện xóa: _id trong DB phải bằng id gửi lên
+              root._id = this.id
+      
+      
+
+      # TRƯỜNG HỢP 4: Định tuyến dữ liệu của topic 'users'
+      # Nếu tin nhắn xuất phát từ topic 'users'
+      - check: 'this._meta.topic == "users"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: users # Lưu thẳng vào bảng 'users'
+            operation: insert-one
+            document_map: |
+              root = this
+
+      # TRƯỜNG HỢP 5: Định tuyến dữ liệu của topic 'orders'
+      - check: 'this._meta.topic == "orders"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: orders # Lưu thẳng vào bảng 'orders'
+            operation: insert-one
+            document_map: |
+              root = this
+
+      # TRƯỜNG HỢP 6: Định tuyến dữ liệu của topic 'payments'
+      - check: 'this._meta.topic == "payments"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: payments # Lưu thẳng vào bảng 'payments'
+            operation: insert-one
+            document_map: |
+              root = this
+
+      # TRƯỜNG HỢP MẶC ĐỊNH (Fallback)
+      # Nếu tin nhắn không khớp với bất kỳ điều kiện (check) nào ở trên (Ví dụ: topic appointment-events)
+      - output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: unrouted_events # Bị đẩy vào bảng chứa các sự kiện chưa phân loại
+            operation: insert-one
+            document_map: |
+              root = this
+  # APPOINTMENT - Thêm lịch hẹn
+- check: 'this._meta.topic == "appointment-events" && this.eventType == "add"'
+  output:
+    mongodb:
+      url: mongodb://host.docker.internal:27017
+      database: appointment_db
+      collection: appointments
+      operation: insert-one
+      document_map: |
+        root = this
+        root._id = this.id
+
+# APPOINTMENT - Sửa lịch hẹn
+- check: 'this._meta.topic == "appointment-events" && this.eventType == "update"'
+  output:
+    mongodb:
+      url: mongodb://host.docker.internal:27017
+      database: appointment_db
+      collection: appointments
+      operation: update-one
+      upsert: false
+      filter_map: |
+        root._id = this.id
+      document_map: |
+        root."$set" = this
+
+# APPOINTMENT - Xóa lịch hẹn
+- check: 'this._meta.topic == "appointment-events" && this.eventType == "delete"'
+  output:
+    mongodb:
+      url: mongodb://host.docker.internal:27017
+      database: appointment_db
+      collection: appointments
+      operation: delete-one
+      filter_map: |
+        root._id = this.id

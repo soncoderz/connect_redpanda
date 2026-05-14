@@ -1,0 +1,66 @@
+# ============================================================
+# PIPELINE 09: Định tuyến (Route) sang nhiều bảng dựa vào Event Type
+# Use-case: Dùng 1 topic duy nhất (ví dụ: 'all-events') nhưng lưu rải rác ra nhiều bảng
+# ============================================================
+
+input:
+  kafka:
+    addresses:
+      - redpanda:9092
+    topics:
+      - all-events      # Chỉ dùng 1 topic chung để nhận mọi thứ
+    consumer_group: connect-09-route-eventtype-group
+    start_from_oldest: true
+
+pipeline:
+  processors:
+    - mapping: |
+        root = this
+        root.savedAt = now()
+        root.source  = "redpanda-connect"
+
+output:
+  switch:
+    cases:
+      # Nếu JSON gửi lên có đánh dấu là "USER_REGISTERED"
+      - check: 'this.eventType == "USER_REGISTERED"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: users    # → Lưu vào bảng users
+            operation: insert-one
+            document_map: |
+              root = this
+
+      # Nếu JSON gửi lên có đánh dấu là "ORDER_CREATED"
+      - check: 'this.eventType == "ORDER_CREATED"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: orders   # → Lưu vào bảng orders
+            operation: insert-one
+            document_map: |
+              root = this
+
+      # Nếu JSON gửi lên có đánh dấu là "PAYMENT_COMPLETED"
+      - check: 'this.eventType == "PAYMENT_COMPLETED"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: payments # → Lưu vào bảng payments
+            operation: insert-one
+            document_map: |
+              root = this
+
+      # Fallback: Những sự kiện lạ, không rõ là gì
+      - output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: audit_log # → Lưu tạm vào bảng log kiểm tra
+            operation: insert-one
+            document_map: |
+              root = this

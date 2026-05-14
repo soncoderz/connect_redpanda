@@ -1,0 +1,40 @@
+# ============================================================
+# PIPELINE 04: Lọc dữ liệu (Filter) theo điều kiện
+# Use-case: Loại bỏ các tin nhắn không đạt yêu cầu trước khi lưu
+# ============================================================
+
+input:
+  kafka:
+    addresses:
+      - redpanda:9092
+    topics:
+      - orders
+    consumer_group: connect-04-filter-eventtype-group
+    start_from_oldest: true
+
+pipeline:
+  processors:
+    # bloblang: Xử lý logic if-else
+    - bloblang: |
+        # Kiểm tra xem trường eventType trong JSON có phải là 'ORDER_CREATED' không?
+        root = if this.eventType == "ORDER_CREATED" {
+          this         # Nếu đúng: giữ lại nguyên văn (this)
+        } else {
+          deleted()    # Nếu sai: Xóa bỏ tin nhắn này khỏi luồng (không lưu DB)
+        }
+
+    # Nếu qua được bộ lọc trên, thì đi tiếp xuống đây để thêm metadata
+    - mapping: |
+        root = this
+        root.savedAt  = now()
+        root.source   = "redpanda-connect"
+        root.pipeline = "filter-by-eventtype"
+
+output:
+  mongodb:
+    url: mongodb://host.docker.internal:27017
+    database: app_db
+    collection: order_created_events
+    operation: insert-one
+    document_map: |
+      root = this

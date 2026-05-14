@@ -1,0 +1,57 @@
+# ============================================================
+# PIPELINE 05: Lọc và rẽ nhánh dựa vào một trường cụ thể (groupId)
+# Use-case: Route sang collection khác nhau tùy thuộc vào dữ liệu JSON bên trong
+# ============================================================
+
+input:
+  kafka:
+    addresses:
+      - redpanda:9092
+    topics:
+      - events
+    consumer_group: connect-05-filter-groupid-group
+    start_from_oldest: true
+
+pipeline:
+  processors:
+    # Bổ sung thông tin cơ bản trước khi đi tiếp
+    - mapping: |
+        root = this
+        root.savedAt = now()
+        root.source  = "redpanda-connect"
+
+output:
+  # switch: Rẽ nhánh dựa vào thuộc tính 'groupId' nằm bên trong file JSON gửi lên
+  switch:
+    cases:
+      # Nếu JSON có "groupId": "GROUP_A"
+      - check: 'this.groupId == "GROUP_A"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: group_a_events   # Lưu vào bảng A
+            operation: insert-one
+            document_map: |
+              root = this
+
+      # Nếu JSON có "groupId": "GROUP_B"
+      - check: 'this.groupId == "GROUP_B"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: group_b_events   # Lưu vào bảng B
+            operation: insert-one
+            document_map: |
+              root = this
+
+      # Default: Nếu JSON không có groupId, hoặc mang mã nhóm khác
+      - output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: unknown_group_events # Đưa vào bảng không xác định
+            operation: insert-one
+            document_map: |
+              root = this

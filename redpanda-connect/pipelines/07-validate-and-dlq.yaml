@@ -1,0 +1,65 @@
+# ============================================================
+# PIPELINE 07: Xác thực lỗi (Validate) & Dead Letter Queue (DLQ)
+# Use-case: Đảm bảo dữ liệu sạch, các tin nhắn lỗi cấu trúc bị đẩy ra một topic riêng biệt (DLQ) thay vì bị xóa vĩnh viễn
+# ============================================================
+
+input:
+  kafka:
+    addresses:
+      - redpanda:9092
+    topics:
+      - orders
+    consumer_group: connect-07-validate-dlq-group
+    start_from_oldest: true
+
+pipeline:
+  processors:
+    # Bước 1: Validate - kiểm tra các điều kiện bắt buộc phải có
+    - bloblang: |
+        # Biến boolean kiểm tra: id không null VÀ eventType không rỗng VÀ amount > 0
+        let isValid = this.id != null
+          && this.eventType != null && this.eventType != ""
+          && this.amount != null && this.amount > 0
+
+        # Gán nhãn cho tin nhắn
+        root = this
+        root._valid = $isValid   # Đánh dấu là true hoặc false
+        
+        # Nếu lỗi thì sinh ra câu báo lỗi đính kèm vào tin nhắn
+        root._error = if $isValid {
+          null
+        } else {
+          "Missing required fields: id, eventType, or amount <= 0"
+        }
+
+output:
+  switch:
+    cases:
+      # Trường hợp 1: Nếu hợp lệ (_valid = true) → lưu vào MongoDB
+      - check: 'this._valid == true'
+        output:
+          fallback:
+            # fallback: Thử kết nối MongoDB trước, nếu sập thì làm lệnh tiếp theo
+            - mongodb:
+                url: mongodb://host.docker.internal:27017
+                database: app_db
+                collection: valid_orders
+                operation: insert-one
+                document_map: |
+                  # Trước khi lưu DB, xóa bỏ nhãn nội bộ để không làm bẩn DB
+                  root = this
+                  root._valid = deleted()
+                  root._error = deleted()
+                  root.savedAt = now()
+                  root.source  = "redpanda-connect"
+            # Nếu MongoDB lỗi → In ra dòng lệnh Terminal để báo (thay vì làm rớt pipeline)
+            - stdout:
+                codec: lines
+
+      # Trường hợp 2: Nếu lỗi cấu trúc (_valid = false) → Đẩy ngược lại Kafka vào topic rác (DLQ)
+      - check: 'this._valid == false'
+        output:
+          kafka_franz:
+            seed_brokers:
+              - redpanda:9092
+            topic: orders-dlq    # Tên topic Kafka dùng để chứa các tin nhắn bị từ chối
