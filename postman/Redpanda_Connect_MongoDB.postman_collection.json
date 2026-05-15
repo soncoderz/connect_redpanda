@@ -606,6 +606,122 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "8. CRUD — Doctors (★ Update sửa 2 bảng cùng lúc)",
+      "description": "POST /api/doctors, PUT /api/doctors/:id, DELETE /api/doctors/:id\nKhi gọi PUT (update), pipeline dùng broker fan_out để đồng thời:\n  1. Cập nhật bảng 'doctors'\n  2. Thêm doctorId vào mảng doctorIds của bảng 'departments'",
+      "item": [
+        {
+          "name": "POST /api/doctors → Thêm bác sĩ mới",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Dr. Nguyen Van A\",\n  \"specialty\": \"Tim mạch\",\n  \"departmentId\": \"DEPT_ID_HERE\",\n  \"departmentName\": \"Khoa Tim Mạch\",\n  \"phone\": \"0901234567\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/doctors",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "doctors"]
+            },
+            "description": "Tạo bác sĩ mới → gửi event 'add' vào topic 'doctor-events' → pipeline insert-one vào bảng doctors."
+          },
+          "response": []
+        },
+        {
+          "name": "PUT /api/doctors/:id → Cập nhật (★ sửa 2 bảng)",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Dr. Nguyen Van A (Updated)\",\n  \"specialty\": \"Thần kinh\",\n  \"departmentId\": \"DEPT_ID_HERE\",\n  \"phone\": \"0909999888\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/doctors/DOCTOR_ID_HERE",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "doctors", "DOCTOR_ID_HERE"]
+            },
+            "description": "Cập nhật bác sĩ (VD: đổi khoa) → pipeline broker fan_out chạy song song:\n  Output 1: update-one bảng doctors ($set thông tin mới)\n  Output 2: update-one bảng departments ($addToSet doctorId vào mảng doctorIds)\nThay DOCTOR_ID_HERE bằng id thực tế."
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /api/doctors/:id → Xóa bác sĩ (★ sửa 2 bảng)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"departmentId\": \"DEPT_ID_HERE\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/doctors/DOCTOR_ID_HERE",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "doctors", "DOCTOR_ID_HERE"]
+            },
+            "description": "Xóa bác sĩ → pipeline broker fan_out:\n  Output 1: delete-one khỏi bảng doctors\n  Output 2: update-one bảng departments ($pull doctorId ra khỏi mảng doctorIds)\nCần truyền departmentId trong body để pipeline biết gỡ khỏi khoa nào."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "9. CRUD — Departments (Khoa/Phòng ban)",
+      "description": "POST /api/departments, PUT /api/departments/:id, DELETE /api/departments/:id\nMỗi request gửi event vào topic 'department-events'.",
+      "item": [
+        {
+          "name": "POST /api/departments → Thêm khoa mới",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Khoa Tim Mạch\",\n  \"floor\": 3,\n  \"building\": \"A\",\n  \"headDoctorId\": null\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/departments",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "departments"]
+            },
+            "description": "Tạo khoa mới → gửi event 'add' vào topic 'department-events' → pipeline insert-one vào bảng departments.\ndoctorIds ban đầu là mảng rỗng [], sẽ được thêm vào khi có bác sĩ được chuyển đến khoa này."
+          },
+          "response": []
+        },
+        {
+          "name": "PUT /api/departments/:id → Cập nhật khoa",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Khoa Tim Mạch (Cơ sở 2)\",\n  \"floor\": 5,\n  \"building\": \"B\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/departments/DEPT_ID_HERE",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "departments", "DEPT_ID_HERE"]
+            },
+            "description": "Cập nhật thông tin khoa → update-one bảng departments.\nThay DEPT_ID_HERE bằng id thực tế."
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /api/departments/:id → Xóa khoa",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/departments/DEPT_ID_HERE",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "departments", "DEPT_ID_HERE"]
+            },
+            "description": "Xóa khoa → delete-one bảng departments.\nThay DEPT_ID_HERE bằng id thực tế."
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

@@ -24,10 +24,10 @@ app.get("/health", (req, res) => {
 // Dynamic: POST /api/publish/:topic
 app.use("/api/publish", require("./routes/publish.routes"));
 
-// CRUD shorthand routes
-app.use("/api/users", require("./routes/crud.routes")("users"));
-app.use("/api/orders", require("./routes/crud.routes")("orders"));
-app.use("/api/payments", require("./routes/crud.routes")("payments"));
+// CRUD routes - mỗi domain dùng route file riêng
+app.use("/api/users",    require("./routes/users.routes"));
+app.use("/api/orders",   require("./routes/orders.routes"));
+app.use("/api/payments", require("./routes/payments.routes"));
 
 // Legacy appointment route
 app.use("/api/appointments", require("./routes/appointment.routes"));

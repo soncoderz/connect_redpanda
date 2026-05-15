@@ -1,6 +1,14 @@
 const crypto = require("crypto");
 const { sendMessage } = require("../kafka/producer");
 
+// ── Khai báo tường minh 3 topic ──────────────────────────
+const TOPICS = {
+  users:    "users",
+  orders:   "orders",
+  payments: "payments",
+};
+
+// ── Hàm helper dùng chung ────────────────────────────────
 const publish = async (topic, eventType, id, data) => {
   const event = {
     id,
@@ -8,75 +16,111 @@ const publish = async (topic, eventType, id, data) => {
     eventTime: new Date().toISOString(),
     ...data,
   };
-
   await sendMessage(topic, event);
   return event;
 };
 
-const createCrudController = (defaultTopic) => ({
-  create: async (req, res) => {
-    try {
-      const topic = req.body.topic || defaultTopic;
-      const event = await publish(topic, "add", crypto.randomUUID(), req.body);
+// ============================================================
+// USERS
+// ============================================================
+const createUser = async (req, res) => {
+  try {
+    const event = await publish(TOPICS.users, "add", crypto.randomUUID(), req.body);
+    res.status(201).json({ success: true, message: `Đã gửi "add" vào topic "${TOPICS.users}"`, eventId: event.id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
-      res.status(201).json({
-        success: true,
-        message: `Đã gửi event "add" vào topic "${topic}"`,
-        eventType: "add",
-        eventId: event.id,
-      });
-    } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
-    }
-  },
+const updateUser = async (req, res) => {
+  try {
+    const event = await publish(TOPICS.users, "update", req.params.id, req.body);
+    res.json({ success: true, message: `Đã gửi "update" vào topic "${TOPICS.users}"`, eventId: event.id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
-  update: async (req, res) => {
-    try {
-      const topic = req.body.topic || defaultTopic;
-      const event = await publish(topic, "update", req.params.id, req.body);
+const deleteUser = async (req, res) => {
+  try {
+    const event = await publish(TOPICS.users, "delete", req.params.id, {});
+    res.json({ success: true, message: `Đã gửi "delete" vào topic "${TOPICS.users}"`, eventId: event.id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
-      res.json({
-        success: true,
-        message: `Đã gửi event "update" vào topic "${topic}"`,
-        eventType: "update",
-        eventId: event.id,
-      });
-    } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
-    }
-  },
+// ============================================================
+// ORDERS
+// ============================================================
+const createOrder = async (req, res) => {
+  try {
+    const event = await publish(TOPICS.orders, "add", crypto.randomUUID(), req.body);
+    res.status(201).json({ success: true, message: `Đã gửi "add" vào topic "${TOPICS.orders}"`, eventId: event.id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
-  remove: async (req, res) => {
-    try {
-      const topic = req.body?.topic || defaultTopic;
-      const event = await publish(topic, "delete", req.params.id, {});
+const updateOrder = async (req, res) => {
+  try {
+    const event = await publish(TOPICS.orders, "update", req.params.id, req.body);
+    res.json({ success: true, message: `Đã gửi "update" vào topic "${TOPICS.orders}"`, eventId: event.id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
-      res.json({
-        success: true,
-        message: `Đã gửi event "delete" vào topic "${topic}"`,
-        eventType: "delete",
-        eventId: event.id,
-      });
-    } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
-    }
-  },
+const deleteOrder = async (req, res) => {
+  try {
+    const event = await publish(TOPICS.orders, "delete", req.params.id, {});
+    res.json({ success: true, message: `Đã gửi "delete" vào topic "${TOPICS.orders}"`, eventId: event.id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
-  upsert: async (req, res) => {
-    try {
-      const topic = req.body.topic || defaultTopic;
-      const event = await publish(topic, "upsert", req.params.id, req.body);
+// ============================================================
+// PAYMENTS
+// ============================================================
+const createPayment = async (req, res) => {
+  try {
+    const event = await publish(TOPICS.payments, "add", crypto.randomUUID(), req.body);
+    res.status(201).json({ success: true, message: `Đã gửi "add" vào topic "${TOPICS.payments}"`, eventId: event.id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
-      res.json({
-        success: true,
-        message: `Đã gửi event "upsert" vào topic "${topic}"`,
-        eventType: "upsert",
-        eventId: event.id,
-      });
-    } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
-    }
-  },
-});
+const updatePayment = async (req, res) => {
+  try {
+    const event = await publish(TOPICS.payments, "update", req.params.id, req.body);
+    res.json({ success: true, message: `Đã gửi "update" vào topic "${TOPICS.payments}"`, eventId: event.id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
-module.exports = createCrudController;
+const deletePayment = async (req, res) => {
+  try {
+    const event = await publish(TOPICS.payments, "delete", req.params.id, {});
+    res.json({ success: true, message: `Đã gửi "delete" vào topic "${TOPICS.payments}"`, eventId: event.id });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+module.exports = {
+  // Users
+  createUser,
+  updateUser,
+  deleteUser,
+  // Orders
+  createOrder,
+  updateOrder,
+  deleteOrder,
+  // Payments
+  createPayment,
+  updatePayment,
+  deletePayment,
+};

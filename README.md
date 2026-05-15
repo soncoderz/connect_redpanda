@@ -1,85 +1,179 @@
 # 🚀 Redpanda Connect × MongoDB — Complete Pipeline Guide
 
-> **33 use-cases** được implement đầy đủ: từ đọc topic đơn giản đến CRUD, validate, DLQ, batch, retry, transform, và routing nâng cao.
+Dự án này là một hệ thống **Event-Driven Architecture (Kiến trúc Hướng Sự kiện)** hoàn chỉnh sử dụng **Node.js, Kafka (Redpanda), Redpanda Connect, và MongoDB**.
+
+Nó giải quyết một bài toán phổ biến trong Microservices: **Làm sao để lưu dữ liệu vào cơ sở dữ liệu một cách bất đồng bộ và xử lý cập nhật nhiều bảng cùng lúc thông qua Kafka?**
 
 ---
 
 ## 📋 Mục lục
 
-- [Kiến trúc tổng quan](#-kiến-trúc-tổng-quan)
-- [Cấu trúc thư mục](#-cấu-trúc-thư-mục)
-- [Cách chạy](#-cách-chạy)
-- [API Reference](#-api-reference)
-- [Danh sách 33 Use-Cases](#-danh-sách-33-use-cases)
-- [Chi tiết từng Pipeline](#-chi-tiết-từng-pipeline)
-- [Thay đổi Database / Topic / Collection](#-thay-đổi-database--topic--collection)
-- [Phân loại Event (eventType)](#-phân-loại-event-eventtype)
-- [Redpanda Connect làm được gì?](#-redpanda-connect-làm-được-gì)
+- [🏗 Kiến trúc tổng quan](#-kiến-trúc-tổng-quan)
+- [💻 Giải thích luồng dữ liệu (Code Walkthrough)](#-giải-thích-luồng-dữ-liệu-code-walkthrough)
+  - [1. Node.js Controller (Gửi Event)](#1-nodejs-controller-gửi-event)
+  - [2. Pipeline Master (Nhận Event & Xử lý)](#2-pipeline-master-nhận-event--xử-lý)
+  - [3. Kỹ thuật cập nhật nhiều bảng (Broker Fan-Out)](#3-kỹ-thuật-cập-nhật-nhiều-bảng-broker-fan-out)
+- [📁 Cấu trúc thư mục](#-cấu-trúc-thư-mục)
+- [🚀 Cách chạy & Khắc phục lỗi](#-cách-chạy--khắc-phục-lỗi)
 
 ---
 
 ## 🏗 Kiến trúc tổng quan
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        CLIENT / API TEST                        │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ HTTP POST
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              Node.js Express API (Port 3000)                    │
-│                                                                 │
-│  POST /api/publish/:topic    ← Dynamic topic                    │
-│  POST /api/users             ← eventType: "add"                 │
-│  PUT  /api/users/:id         ← eventType: "update"              │
-│  DELETE /api/users/:id       ← eventType: "delete"              │
-│  PATCH /api/users/:id        ← eventType: "upsert"              │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ KafkaJS Producer
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Redpanda Broker (:9092)                       │
-│                                                                 │
-│  Topics: users, orders, payments, crud-events, all-events ...   │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │
-          ┌────────────────────┼────────────────────┐
-          ▼                    ▼                    ▼
-┌──────────────────┐ ┌──────────────────┐ ┌──────────────────────┐
-│ connect-master   │ │  connect-crud    │ │  connect-validate    │
-│ (Pipeline 00)    │ │  (Pipeline 08)   │ │  (Pipeline 07)       │
-│ Full routing     │ │  CRUD operations │ │  Validate + DLQ      │
-└────────┬─────────┘ └────────┬─────────┘ └──────────┬───────────┘
-         │                    │                       │
-         └────────────────────┼───────────────────────┘
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              MongoDB (:27017) — mongodb://host.docker.internal:27017           │
-│                                                                 │
-│  Database: app_db                                               │
-│  Collections: users, orders, payments, resources,              │
-│               all_events, valid_orders, audit_log, ...         │
-└─────────────────────────────────────────────────────────────────┘
+Mọi thao tác ghi/xóa/sửa (CRUD) từ người dùng không được ghi trực tiếp vào MongoDB. Thay vào đó, nó đi qua Kafka theo luồng sau:
+
+```mermaid
+graph TD
+    Client[Client (Postman)] -->|HTTP POST /api/doctors| Express[Node.js Express API]
+    Express -->|Gửi Kafka Event| Kafka[(Redpanda / Kafka)]
+    Kafka -->|Topic: doctor-events| Connect[Redpanda Connect Pipeline]
+    Connect -->|Lọc & Biến đổi| Switch{Rẽ nhánh theo eventType}
+    Switch -->|add| MongoInsert[MongoDB: insert-one]
+    Switch -->|update| MongoBroker[Broker Fan-Out: sửa nhiều bảng]
+    MongoBroker --> MongoUpdate1[MongoDB: Cập nhật bảng doctors]
+    MongoBroker --> MongoUpdate2[MongoDB: Thêm ID vào bảng departments]
 ```
 
-### Luồng dữ liệu chi tiết
+### Tại sao lại làm phức tạp như vậy?
+1. **Chống quá tải (Buffer):** Khi có hàng chục ngàn request cùng lúc, Node.js chỉ việc đẩy vào Kafka (rất nhanh). Pipeline sẽ từ từ nhặt ra để ghi vào MongoDB, giúp DB không bị sập.
+2. **Decoupling (Giảm phụ thuộc):** App Node.js không cần biết MongoDB lưu trữ ra sao. Nó chỉ quan tâm là "đã có sự kiện tạo bác sĩ xảy ra".
+3. **Cập nhật đa bảng dễ dàng:** Một sự kiện (như update) có thể kích hoạt nhiều thao tác song song trên nhiều bảng khác nhau mà không cần Node.js phải xử lý giao dịch (transaction) phức tạp.
 
+---
+
+## 💻 Giải thích luồng dữ liệu (Code Walkthrough)
+
+Hãy cùng đi theo luồng của một Request tạo và cập nhật Bác sĩ (`doctors`) để xem code hoạt động thế nào.
+
+### 1. Node.js Controller (Gửi Event)
+
+File: `src/controllers/crud.controller.js`
+
+Thay vì lưu thẳng vào Database, Node.js gom dữ liệu lại thành một cục gọi là **Event** (Sự kiện) và đẩy lên Kafka.
+
+```javascript
+// Khai báo topic tương ứng với từng đối tượng
+const TOPICS = {
+  users:    "users",
+  orders:   "orders",
+  payments: "payments",
+  doctors:  "doctor-events" // Mọi thứ liên quan đến bác sĩ sẽ chui vào đây
+};
+
+// Hàm tạo mới bác sĩ
+const createDoctor = async (req, res) => {
+  try {
+    // 1. Tạo cục Event bao gồm: ID, Loại sự kiện (add), Thời gian, và Dữ liệu (req.body)
+    const event = {
+      id: crypto.randomUUID(),           // Cấp cho bác sĩ một mã ID độc nhất
+      eventType: "add",                  // Loại hành động: Thêm mới
+      eventTime: new Date().toISOString(),
+      ...req.body                        // Lấy dữ liệu người dùng gửi lên (name, specialty...)
+    };
+
+    // 2. Gửi cục Event này vào Kafka Topic "doctor-events"
+    await sendMessage(TOPICS.doctors, event);
+
+    // 3. Trả về cho người dùng báo thành công (lúc này DB chưa chắc đã lưu xong, nhưng Kafka đã nhận)
+    res.status(201).json({ success: true, eventId: event.id });
+  } catch (err) {
+    // ...
+  }
+};
 ```
-API POST /api/orders (body: { eventType: "add", ... })
-   ↓
-Express Route → sendMessage("orders", { id, eventType: "add", ... })
-   ↓
-Redpanda Topic: "orders"
-   ↓
-Redpanda Connect đọc topic "orders"
-   ↓
-Pipeline Processor: validate → filter → transform → add metadata
-   ↓
-Switch output theo eventType:
-  "add"    → MongoDB insert-one  → collection orders
-  "update" → MongoDB update-one  → collection orders
-  "delete" → MongoDB delete-one  → collection orders
+
+---
+
+### 2. Pipeline Master (Nhận Event & Xử lý)
+
+File: `redpanda-connect/pipelines/00-master-pipeline.yaml`
+
+Đây là "Trái tim" của hệ thống. Nó là một file cấu hình định nghĩa luồng chảy của dữ liệu từ Kafka vào MongoDB.
+
+```yaml
+# 1. INPUT: Nơi dữ liệu đi vào
+input:
+  kafka:
+    addresses: [redpanda:9092]
+    topics:
+      - doctor-events      # Lắng nghe topic bác sĩ
+      - department-events  # Lắng nghe topic phòng ban
+      # ... các topic khác
+    consumer_group: connect-master-group
+
+# 2. PIPELINE: Xử lý trung gian (Nhào nặn dữ liệu)
+pipeline:
+  processors:
+    - bloblang: |
+        # Ngôn ngữ Bloblang: Kiểm tra xem event có id và eventType không?
+        let hasId    = this.id != null
+        let hasEvent = this.eventType != null && this.eventType != ""
+        root = this
+        root._meta.valid = $hasId && $hasEvent # Đánh dấu hợp lệ hay không
+
+    - bloblang: |
+        # Lọc bỏ rác: Nếu hợp lệ thì cho đi tiếp, nếu không thì gọi deleted() để vứt bỏ
+        root = if this._meta.valid { this } else { deleted() }
+
+# 3. OUTPUT: Nơi dữ liệu đi ra (Đích đến MongoDB)
+output:
+  switch: # Lệnh switch/case để rẽ nhánh
+    cases:
+      # TRƯỜNG HỢP: Nếu đến từ topic bác sĩ VÀ là lệnh "add"
+      - check: 'this._meta.topic == "doctor-events" && this.eventType == "add"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: doctors    # Chọn bảng (collection) doctors
+            operation: insert-one  # Thao tác: CHÈN 1 BẢN GHI MỚI
+            document_map: |
+              root = this          # Lấy toàn bộ nội dung event làm dữ liệu lưu vào DB
+              root._id = this.id   # Lấy id của event làm khóa chính (_id) cho MongoDB
 ```
+
+---
+
+### 3. Kỹ thuật cập nhật nhiều bảng (Broker Fan-Out)
+
+Bài toán: Khi chuyển bác sĩ sang khoa khác (Update), ta vừa phải **sửa thông tin trong bảng Bác sĩ**, vừa phải **thêm ID bác sĩ đó vào mảng danh sách của bảng Khoa**.
+
+Giải pháp trong Pipeline: Dùng `broker` với pattern `fan_out` (Nhân bản). 1 Event đi vào sẽ kích hoạt 2 hành động ghi DB cùng lúc.
+
+```yaml
+      # TRƯỜNG HỢP: Cập nhật bác sĩ (SỬA ĐỒNG THỜI 2 BẢNG)
+      - check: 'this._meta.topic == "doctor-events" && this.eventType == "update"'
+        output:
+          broker:
+            pattern: fan_out # Tách event này ra làm 2 luồng chạy song song
+            outputs:
+              
+              # LUỒNG 1: Sửa bảng doctors
+              - mongodb:
+                  database: app_db
+                  collection: doctors
+                  operation: update-one # Lệnh CẬP NHẬT
+                  filter_map: |
+                    root._id = this.id  # Tìm bác sĩ theo ID
+                  document_map: |
+                    root."$set" = this  # Dùng toán tử $set của MongoDB để ghi đè dữ liệu mới
+              
+              # LUỒNG 2: Sửa bảng departments
+              - mongodb:
+                  database: app_db
+                  collection: departments
+                  operation: update-one # Lệnh CẬP NHẬT
+                  filter_map: |
+                    # Tìm đúng cái khoa mà bác sĩ vừa chuyển tới (dựa vào departmentId gửi lên)
+                    root._id = this.departmentId
+                  document_map: |
+                    # Dùng $addToSet của MongoDB: Nhét ID của bác sĩ vào mảng "doctorIds" của khoa đó
+                    # ($addToSet thông minh ở chỗ nếu ID đã có trong mảng thì nó sẽ bỏ qua, không bị trùng)
+                    root."$addToSet"."doctorIds" = this.id
+```
+**Chữ `-one` có ý nghĩa gì?**
+Tại sao luôn dùng `insert-one`, `update-one`?
+Bởi vì mỗi Event từ Kafka chỉ đại diện cho sự thay đổi của **một** đối tượng duy nhất. Dùng `-one` giúp đảm bảo an toàn, tránh việc lỡ cấu hình sai (`filter_map` bị rỗng) thì nó sẽ xóa/sửa hàng loạt dữ liệu trong DB.
 
 ---
 
@@ -87,501 +181,52 @@ Switch output theo eventType:
 
 ```
 connect_redpanda/
-├── docker-compose.yml              # Toàn bộ stack: Redpanda + MongoDB + Connect × 5
-├── Dockerfile                      # Build Node.js API
-├── .env                            # Biến môi trường local
-├── .env.example                    # Template biến môi trường
-│
+├── docker-compose.yml              # Dựng Kafka, MongoDB, và Redpanda Connect
+├── package.json                    # Cấu hình Node.js
 ├── redpanda-connect/
-│   ├── connect.yaml                # Pipeline cũ (backward compat)
 │   └── pipelines/
-│       ├── 00-master-pipeline.yaml         # Pipeline tổng hợp (#32, #33)
-│       ├── 01-single-topic-to-collection.yaml  # 1 topic → 1 collection (#1, #2)
-│       ├── 02-multi-topic-multi-collection.yaml # N topic → N collection (#3, #24)
-│       ├── 03-multi-topic-one-collection.yaml   # N topic → 1 collection (#4)
-│       ├── 04-filter-by-eventtype.yaml     # Filter theo eventType (#5, #6)
-│       ├── 05-filter-by-groupid.yaml       # Filter theo groupId (#7, #26)
-│       ├── 06-transform-data.yaml          # Transform, rename, delete field (#8-12)
-│       ├── 07-validate-and-dlq.yaml        # Validate + DLQ (#13-16)
-│       ├── 08-crud-operations.yaml         # Insert/Update/Delete/Upsert (#17-20)
-│       ├── 09-route-by-eventtype.yaml      # Route theo eventType (#25)
-│       └── 10-batch-retry-errorlog.yaml    # Batch, Retry, Log (#28-31)
-│
-└── src/
-    ├── server.js                   # Express app
-    ├── config/kafka.js             # KafkaJS config
-    ├── kafka/
-    │   ├── producer.js             # Gửi message vào topic
-    │   └── consumer.js             # Node.js consumer (optional)
-    └── routes/
-        ├── publish.routes.js       # POST /api/publish/:topic (dynamic)
-        ├── crud.routes.js          # CRUD factory route
-        └── appointment.routes.js   # Legacy route
+│       └── 00-master-pipeline.yaml # File cấu hình luồng xử lý chính
+├── src/
+│   ├── server.js                   # Entry point của Node.js (khởi tạo API)
+│   ├── config/kafka.js             # Kết nối tới Redpanda
+│   ├── kafka/producer.js           # Chứa hàm sendMessage() gửi vào Kafka
+│   ├── controllers/
+│   │   └── crud.controller.js      # Gói gọn logic đóng gói Event và đẩy lên Kafka
+│   └── routes/                     # Các file định tuyến API (POST/PUT/DELETE)
+└── postman/
+    └── Redpanda_Connect_MongoDB.postman_collection.json # File test API có sẵn
 ```
 
 ---
 
-## 🚀 Cách chạy
+## 🚀 Cách chạy & Khắc phục lỗi
 
-### Yêu cầu
-
-- Docker & Docker Compose
-- Node.js 20+ (chỉ cần cho dev local)
-
-### 1. Clone và cấu hình
+### 1. Cài đặt và khởi chạy
 
 ```bash
-# Copy env
-cp .env.example .env
-```
-
-### 2. Chạy toàn bộ stack
-
-```bash
-# Khởi động tất cả: Redpanda + MongoDB + 5 pipeline Connect + API
-docker compose up -d
-
-# Xem logs
-docker compose logs -f connect-master
-docker compose logs -f connect-crud
-docker compose logs -f api
-```
-
-### 3. Chạy chỉ một pipeline cụ thể
-
-```bash
-# Chỉ chạy pipeline CRUD
-docker compose up -d redpanda mongo connect-crud
-
-# Chỉ chạy pipeline validate + DLQ
-docker compose up -d redpanda mongo connect-validate
-```
-
-### 4. Chạy local (dev)
-
-```bash
+# 1. Cài thư viện Node.js
 npm install
+
+# 2. Khởi động hệ thống nền tảng (Kafka, DB, Pipeline) bằng Docker
+docker-compose up -d
+
+# 3. Khởi chạy API server Node.js
 npm run dev
 ```
 
-### 5. Tạo topics cần thiết (lần đầu)
+### 2. Sửa lỗi kinh điển: Sửa YAML nhưng không ăn code?
+
+Khi bạn chỉnh sửa code Node.js (`src/`), server sẽ tự khởi động lại nhờ công cụ như nodemon/npm.
+Tuy nhiên, khi bạn chỉnh sửa file `00-master-pipeline.yaml`, bạn đang sửa file cấu hình của một **Docker Container**. Container đó không tự biết file đã thay đổi.
+
+**Giải pháp:** Mọi lần sửa file `.yaml` trong thư mục `redpanda-connect`, BẮT BUỘC phải chạy lệnh sau để khởi động lại bộ xử lý:
 
 ```bash
-# Tạo các topic
-docker exec redpanda rpk topic create users orders payments crud-events all-events high-volume-events events raw-events orders-dlq
-
-# Xem danh sách topic
-docker exec redpanda rpk topic list
+docker-compose restart connect
 ```
 
----
-
-## 📡 API Reference
-
-### Base URL
-
-```
-http://localhost:3000
-```
-
-### GET /health
-
-```json
-{ "status": "ok", "service": "redpanda-connect-backend" }
-```
-
----
-
-### POST /api/publish/:topic — Dynamic Publish
-
-Gửi message vào **bất kỳ topic nào** bạn muốn. Redpanda Connect sẽ xử lý phía sau.
-
-```bash
-# Ví dụ: gửi vào topic "users"
-curl -X POST http://localhost:3000/api/publish/users \
-  -H "Content-Type: application/json" \
-  -d '{
-    "eventType": "add",
-    "name": "Nguyen Van A",
-    "email": "a@example.com"
-  }'
-
-# Ví dụ: gửi vào topic "orders" với eventType "delete"
-curl -X POST http://localhost:3000/api/publish/orders \
-  -H "Content-Type: application/json" \
-  -d '{
-    "eventType": "delete",
-    "id": "abc-123"
-  }'
-```
-
-**Body Parameters:**
-
-| Field | Type | Mặc định | Mô tả |
-|-------|------|----------|-------|
-| `eventType` | string | `"add"` | `add` / `update` / `delete` / `upsert` / custom |
-| `id` | string | auto UUID | ID của document |
-| `groupId` | string | null | Dùng cho filter theo group |
-| `database` | string | null | Metadata (pipeline đọc nếu cần) |
-| `collection` | string | null | Metadata (pipeline đọc nếu cần) |
-| `...payload` | any | - | Bất kỳ data nào khác |
-
----
-
-### CRUD Routes (shorthand)
-
-#### Users
-
-```bash
-# Tạo user mới → eventType: "add"
-curl -X POST http://localhost:3000/api/users \
-  -H "Content-Type: application/json" \
-  -d '{ "name": "Nguyen Van A", "email": "a@example.com" }'
-
-# Cập nhật user → eventType: "update"
-curl -X PUT http://localhost:3000/api/users/USER_ID \
-  -H "Content-Type: application/json" \
-  -d '{ "name": "Nguyen Van B" }'
-
-# Xóa user → eventType: "delete"
-curl -X DELETE http://localhost:3000/api/users/USER_ID
-
-# Upsert user → eventType: "upsert"
-curl -X PATCH http://localhost:3000/api/users/USER_ID \
-  -H "Content-Type: application/json" \
-  -d '{ "name": "Nguyen Van A", "email": "new@example.com" }'
-```
-
-#### Orders
-
-```bash
-# Tạo order
-curl -X POST http://localhost:3000/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{ "item": "Laptop", "amount": 25000000 }'
-
-# Cập nhật order
-curl -X PUT http://localhost:3000/api/orders/ORDER_ID \
-  -H "Content-Type: application/json" \
-  -d '{ "status": "PAID" }'
-
-# Xóa order
-curl -X DELETE http://localhost:3000/api/orders/ORDER_ID
-```
-
-#### Payments
-
-```bash
-# Tạo payment
-curl -X POST http://localhost:3000/api/payments \
-  -H "Content-Type: application/json" \
-  -d '{ "orderId": "xyz", "amount": 500000, "method": "MOMO" }'
-```
-
----
-
-### Thay đổi topic khi POST
-
-```bash
-# Gửi order vào topic tùy chỉnh
-curl -X POST http://localhost:3000/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{
-    "topic": "my-custom-topic",
-    "item": "Phone",
-    "amount": 10000000
-  }'
-```
-
----
-
-## 📋 Danh sách 33 Use-Cases
-
-| # | Use-case | Pipeline File | Trạng thái |
-|---|----------|---------------|-----------|
-| 1 | Đọc topic → lưu MongoDB | `01-single-topic-to-collection.yaml` | ✅ |
-| 2 | Đọc 1 topic → 1 collection | `01-single-topic-to-collection.yaml` | ✅ |
-| 3 | Đọc nhiều topic → nhiều collection | `02-multi-topic-multi-collection.yaml` | ✅ |
-| 4 | Đọc nhiều topic → 1 collection | `03-multi-topic-one-collection.yaml` | ✅ |
-| 5 | Đọc topic có nhiều eventType, chỉ lưu 1 loại | `04-filter-by-eventtype.yaml` | ✅ |
-| 6 | Lọc message theo field eventType | `04-filter-by-eventtype.yaml` | ✅ |
-| 7 | Lọc message theo field groupId | `05-filter-by-groupid.yaml` | ✅ |
-| 8 | Transform dữ liệu trước khi lưu | `06-transform-data.yaml` | ✅ |
-| 9 | Thêm field `savedAt` | `01` → `10` (tất cả pipeline) | ✅ |
-| 10 | Thêm field `source` | `01` → `10` (tất cả pipeline) | ✅ |
-| 11 | Xóa field không cần thiết | `06-transform-data.yaml` | ✅ |
-| 12 | Đổi tên field | `06-transform-data.yaml` | ✅ |
-| 13 | Validate dữ liệu trước khi lưu | `07-validate-and-dlq.yaml` | ✅ |
-| 14 | Message hợp lệ → lưu MongoDB | `07-validate-and-dlq.yaml` | ✅ |
-| 15 | Message lỗi → bỏ qua (`deleted()`) | `00-master-pipeline.yaml` | ✅ |
-| 16 | Message lỗi → gửi sang DLQ topic | `07-validate-and-dlq.yaml` | ✅ |
-| 17 | Insert document mới | `08-crud-operations.yaml` | ✅ |
-| 18 | Update document | `08-crud-operations.yaml` | ✅ |
-| 19 | Delete document | `08-crud-operations.yaml` | ✅ |
-| 20 | Upsert document | `08-crud-operations.yaml` | ✅ |
-| 21 | Ghi topic `users` → collection `users` | `02-multi-topic-multi-collection.yaml` | ✅ |
-| 22 | Ghi topic `orders` → collection `orders` | `02-multi-topic-multi-collection.yaml` | ✅ |
-| 23 | Ghi topic `payments` → collection `payments` | `02-multi-topic-multi-collection.yaml` | ✅ |
-| 24 | Route theo topic → collection khác nhau | `02-multi-topic-multi-collection.yaml` | ✅ |
-| 25 | Route theo eventType → collection khác nhau | `09-route-by-eventtype.yaml` | ✅ |
-| 26 | Route theo groupId → collection khác nhau | `05-filter-by-groupid.yaml` | ✅ |
-| 27 | consumer_group quản lý offset | Tất cả pipeline | ✅ |
-| 28 | Scale bằng nhiều instance + consumer_group | `10-batch-retry-errorlog.yaml` + Docker | ✅ |
-| 29 | Batch message để ghi MongoDB hiệu quả | `10-batch-retry-errorlog.yaml` | ✅ |
-| 30 | Retry khi MongoDB lỗi tạm thời | `07-validate-and-dlq.yaml` | ✅ |
-| 31 | Ghi log lỗi khi lưu MongoDB thất bại | `07-validate-and-dlq.yaml` | ✅ |
-| 32 | Pipeline input → processors → output | `00-master-pipeline.yaml` | ✅ |
-| 33 | Thay Kafka Connect MongoDB Sink | Toàn bộ hệ thống | ✅ |
-
----
-
-## 🔧 Chi tiết từng Pipeline
-
-### Pipeline 00: Master Pipeline (Production)
-
-**File:** `redpanda-connect/pipelines/00-master-pipeline.yaml`
-
-Pipeline tổng hợp dùng cho production. Tích hợp: validate → filter → transform → CRUD routing.
-
-```
-Topics đọc: users, orders, payments, crud-events
-Validate → Bỏ message lỗi → Thêm metadata
-Switch output theo topic + eventType:
-  crud-events + add    → insert-one  → resources
-  crud-events + update → update-one  → resources
-  crud-events + delete → delete-one  → resources
-  users                → insert-one  → users
-  orders               → insert-one  → orders
-  payments             → insert-one  → payments
-  (default)            → insert-one  → unrouted_events
-```
-
----
-
-### Pipeline 01: Single Topic → Single Collection
-
-**File:** `redpanda-connect/pipelines/01-single-topic-to-collection.yaml`
-
-```yaml
-# Thay đổi topic, database, collection ở đây:
-input.kafka.topics: [users]
-output.mongodb.database: app_db
-output.mongodb.collection: users
-```
-
----
-
-### Pipeline 02: Multi-Topic → Multi-Collection
-
-**File:** `redpanda-connect/pipelines/02-multi-topic-multi-collection.yaml`
-
-```
-users    topic → users    collection
-orders   topic → orders   collection
-payments topic → payments collection
-```
-
-Routing dựa trên Kafka metadata `@kafka_topic`.
-
----
-
-### Pipeline 07: Validate + DLQ
-
-**File:** `redpanda-connect/pipelines/07-validate-and-dlq.yaml`
-
-```
-Message đến
-  │
-  ├── validate(id, eventType, amount > 0)
-  │
-  ├── Valid    → retry(5x) → MongoDB → valid_orders
-  │                       ↘ thất bại → stdout log
-  │
-  └── Invalid  → kafka topic: orders-dlq
-```
-
----
-
-### Pipeline 08: CRUD Operations
-
-**File:** `redpanda-connect/pipelines/08-crud-operations.yaml`
-
-```
-eventType == "add"    → insert-one   (tạo mới)
-eventType == "update" → update-one   (cập nhật)
-eventType == "delete" → delete-one   (xóa)
-eventType == "upsert" → update-one + upsert: true
-```
-
----
-
-### Pipeline 10: Batch + Retry + Scale
-
-**File:** `redpanda-connect/pipelines/10-batch-retry-errorlog.yaml`
-
-```
-- threads: 4                   # 4 goroutine xử lý song song
-- fetch_min_bytes: 1024        # Đợi ít nhất 1KB để batch
-- fetch_max_wait: 500ms        # Timeout batch
-- retry.max_retries: 5         # Retry 5 lần
-- retry.backoff: 1s → 30s      # Exponential backoff
-```
-
----
-
-## ⚙️ Thay đổi Database / Topic / Collection
-
-### Cách 1: Chỉnh sửa file YAML (cố định)
-
-```yaml
-# Trong bất kỳ file pipeline nào:
-input:
-  kafka:
-    topics:
-      - my-new-topic        # ← Đổi topic ở đây
-
-output:
-  mongodb:
-    database: my_database   # ← Đổi database ở đây
-    collection: my_collection  # ← Đổi collection ở đây
-```
-
-### Cách 2: Dùng biến môi trường
-
-```yaml
-output:
-  mongodb:
-    url: ${MONGO_URL:mongodb://host.docker.internal:27017}
-    database: ${MONGO_DATABASE:app_db}
-    collection: ${MONGO_COLLECTION:events}
-```
-
-```bash
-# Truyền biến khi chạy
-MONGO_DATABASE=production_db MONGO_COLLECTION=v2_events \
-  docker compose up connect-master
-```
-
-### Cách 3: API Dynamic (không cần restart)
-
-```bash
-# Gửi vào topic bất kỳ qua API
-curl -X POST http://localhost:3000/api/publish/my-custom-topic \
-  -d '{ "eventType": "add", "data": "..." }'
-```
-
-Sau đó cấu hình pipeline để đọc `my-custom-topic` trong `.yaml`.
-
----
-
-## 🏷️ Phân loại Event (eventType)
-
-Hệ thống sử dụng field `eventType` trong message để phân loại và route:
-
-| `eventType` | MongoDB Operation | Mô tả |
-|-------------|-------------------|-------|
-| `add` | `insert-one` | Tạo document mới |
-| `update` | `update-one` | Cập nhật document theo `id` |
-| `delete` | `delete-one` | Xóa document theo `id` |
-| `upsert` | `update-one + upsert:true` | Tạo mới nếu chưa có |
-| Custom string | Xem pipeline 09 | Route sang collection khác |
-
-### Ví dụ payload đầy đủ
-
-```json
-{
-  "id": "uuid-v4",
-  "eventType": "update",
-  "eventTime": "2026-05-14T10:00:00.000Z",
-  "groupId": "GROUP_A",
-  "name": "Nguyen Van A",
-  "email": "a@example.com"
-}
-```
-
----
-
-## 🤔 Redpanda Connect với MongoDB làm được gì?
-
-Redpanda Connect là **data pipeline engine** chạy giữa Redpanda/Kafka và MongoDB. Nó **không phải** một consumer viết tay — nó là một framework pipeline với hàng trăm connector sẵn có.
-
-### Khả năng chính
-
-| Tính năng | Cách dùng |
-|-----------|-----------|
-| **Read topics** | `input.kafka` với 1 hoặc nhiều topic |
-| **Write MongoDB** | `output.mongodb` với insert/update/delete/upsert |
-| **Filter message** | `bloblang: deleted()` để bỏ qua |
-| **Transform data** | `mapping` processor để rename/add/remove field |
-| **Route output** | `switch` output theo bất kỳ điều kiện nào |
-| **Validate** | Kiểm tra field bắt buộc trước khi lưu |
-| **DLQ** | Gửi message lỗi sang topic khác |
-| **Retry** | Tự động retry với exponential backoff |
-| **Batch** | Gom nhiều message để ghi hiệu quả |
-| **Scale** | Nhiều instance dùng cùng `consumer_group` |
-| **CRUD** | Toàn bộ CRUD với `operation` config |
-
-### So sánh với Kafka Connect
-
-| | Kafka Connect | Redpanda Connect |
-|--|---------------|------------------|
-| Filter/Transform | Cần SMT (Single Message Transform) | Bloblang (mạnh hơn nhiều) |
-| CRUD routing | Không có sẵn | Switch output đơn giản |
-| DLQ | Cần config phức tạp | `fallback` output |
-| Validate | Không có | Bloblang built-in |
-| Config | JSON phức tạp | YAML đơn giản |
-| Language | Java | Go (nhẹ hơn) |
-
----
-
-## 🔍 Debugging
-
-```bash
-# Xem topic có message chưa
-docker exec redpanda rpk topic consume users --num 5
-
-# Xem MongoDB
-docker exec -it mongo mongosh
-> use app_db
-> db.users.find().pretty()
-> db.orders.find().pretty()
-> db.orders_dlq.find().pretty()   # DLQ messages
-
-# Xem log pipeline
-docker compose logs -f connect-master
-docker compose logs -f connect-crud
-
-# Restart pipeline sau khi thay đổi YAML
-docker compose restart connect-master
-```
-
----
-
-## 📊 Monitoring
-
-```bash
-# Xem tất cả consumer groups
-docker exec redpanda rpk group list
-
-# Xem lag của consumer group
-docker exec redpanda rpk group describe connect-master-group
-
-# Xem stats connect
-docker compose ps
-```
-
----
-
-## 🔄 Scale Pipeline
-
-```bash
-# Chạy 3 instance connect-master cùng consumer_group
-docker compose up -d --scale connect-master=3
-
-# 3 instance sẽ tự động chia partition để xử lý
-# Không có message nào bị xử lý 2 lần (consumer_group đảm bảo)
-```
-
----
-
-*Được xây dựng với: Node.js + KafkaJS + Redpanda Connect + MongoDB*
+### 3. Cách test bằng Postman
+1. Mở Postman.
+2. Bấm Import.
+3. Chọn file `postman/Redpanda_Connect_MongoDB.postman_collection.json` nằm trong dự án.
+4. Chọn các Folder cuối cùng (như **8. CRUD - Doctors**) và bấm Send thử các request POST, PUT. Mở MongoDB UI để xem kết quả biến đổi của các bảng dữ liệu!
