@@ -32,6 +32,10 @@ app.use("/api/payments", require("./routes/crud.routes")("payments"));
 // Legacy appointment route
 app.use("/api/appointments", require("./routes/appointment.routes"));
 
+// Doctor & Department routes (ví dụ update đồng thời 2 bảng)
+app.use("/api/doctors", require("./routes/doctors.routes"));
+app.use("/api/departments", require("./routes/departments.routes"));
+
 // ── Start ─────────────────────────────────────────────────
 const start = async () => {
   await connectProducer();
@@ -39,12 +43,14 @@ const start = async () => {
     console.log("╔══════════════════════════════════════════════════╗");
     console.log("║         Redpanda Connect Backend                 ║");
     console.log("╠══════════════════════════════════════════════════╣");
-    console.log(`║  Server   : http://localhost:${PORT}                 ║`);
-    console.log(`║  Health   : GET  /health                         ║`);
-    console.log(`║  Publish  : POST /api/publish/:topic             ║`);
-    console.log(`║  Users    : POST /api/users  (add/update/delete) ║`);
-    console.log(`║  Orders   : POST /api/orders                     ║`);
-    console.log(`║  Payments : POST /api/payments                   ║`);
+    console.log(`║  Server      : http://localhost:${PORT}              ║`);
+    console.log(`║  Health      : GET  /health                      ║`);
+    console.log(`║  Publish     : POST /api/publish/:topic          ║`);
+    console.log(`║  Users       : POST /api/users                   ║`);
+    console.log(`║  Orders      : POST /api/orders                  ║`);
+    console.log(`║  Payments    : POST /api/payments                ║`);
+    console.log(`║  Doctors     : /api/doctors  (CRUD + multi-table)║`);
+    console.log(`║  Departments : /api/departments (CRUD)           ║`);
     console.log("╚══════════════════════════════════════════════════╝");
   });
 };

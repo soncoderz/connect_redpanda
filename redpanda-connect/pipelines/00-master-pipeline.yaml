@@ -9,12 +9,14 @@ input:
     addresses:
       - redpanda:9092 # Địa chỉ Kafka broker
     topics:
-      # Lắng nghe đồng thời 5 topic khác nhau
+      # Lắng nghe đồng thời 7 topic khác nhau
       - users
       - orders
       - payments
       - crud-events
       - appointment-events
+      - doctor-events        # MỚI: Topic cho bác sĩ
+      - department-events    # MỚI: Topic cho khoa/phòng ban
     consumer_group: connect-master-group # Tên nhóm tiêu thụ
     start_from_oldest: true # Đọc từ đầu nếu chưa có lịch sử đọc
 
@@ -183,6 +185,132 @@ output:
             url: mongodb://host.docker.internal:27017
             database: app_db
             collection: appointments
+            operation: delete-one
+            filter_map: |
+              root._id = this.id
+
+      # ============================================================
+      # DOCTOR - Thêm bác sĩ mới
+      # ============================================================
+      - check: 'this._meta.topic == "doctor-events" && this.eventType == "add"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: doctors
+            operation: insert-one
+            document_map: |
+              root = this
+              root._id = this.id
+
+      # ============================================================
+      # DOCTOR - Cập nhật bác sĩ (★ SỬA ĐỒNG THỜI 2 BẢNG ★)
+      # Khi bác sĩ được chuyển khoa, pipeline sẽ:
+      #   1. Cập nhật thông tin mới trong bảng "doctors"
+      #   2. Thêm ID bác sĩ vào mảng doctorIds trong bảng "departments"
+      # Cả 2 thao tác diễn ra song song nhờ broker pattern: fan_out
+      # ============================================================
+      - check: 'this._meta.topic == "doctor-events" && this.eventType == "update"'
+        output:
+          broker:
+            pattern: fan_out # Nhân bản 1 tin nhắn ra cho TẤT CẢ outputs bên dưới
+            outputs:
+              # OUTPUT 1: Cập nhật bảng doctors
+              - mongodb:
+                  url: mongodb://host.docker.internal:27017
+                  database: app_db
+                  collection: doctors
+                  operation: update-one
+                  upsert: false
+                  filter_map: |
+                    root._id = this.id
+                  document_map: |
+                    root."$set" = this
+
+              # OUTPUT 2: Cập nhật bảng departments (thêm bác sĩ vào danh sách khoa)
+              - mongodb:
+                  url: mongodb://host.docker.internal:27017
+                  database: app_db
+                  collection: departments
+                  operation: update-one
+                  upsert: false
+                  filter_map: |
+                    # Tìm khoa theo departmentId mà bác sĩ được chuyển đến
+                    root._id = this.departmentId
+                  document_map: |
+                    # $addToSet: thêm phần tử vào mảng, tự động tránh trùng lặp
+                    root."$addToSet"."doctorIds" = this.id
+
+      # ============================================================
+      # DOCTOR - Xóa bác sĩ (★ CŨNG SỬA 2 BẢNG ★)
+      # Xóa khỏi bảng doctors + gỡ ID ra khỏi bảng departments
+      # ============================================================
+      - check: 'this._meta.topic == "doctor-events" && this.eventType == "delete"'
+        output:
+          broker:
+            pattern: fan_out
+            outputs:
+              # OUTPUT 1: Xóa bác sĩ khỏi bảng doctors
+              - mongodb:
+                  url: mongodb://host.docker.internal:27017
+                  database: app_db
+                  collection: doctors
+                  operation: delete-one
+                  filter_map: |
+                    root._id = this.id
+
+              # OUTPUT 2: Gỡ ID bác sĩ ra khỏi bảng departments
+              - mongodb:
+                  url: mongodb://host.docker.internal:27017
+                  database: app_db
+                  collection: departments
+                  operation: update-one
+                  upsert: false
+                  filter_map: |
+                    root._id = this.departmentId
+                  document_map: |
+                    # $pull: gỡ phần tử ra khỏi mảng
+                    root."$pull"."doctorIds" = this.id
+
+      # ============================================================
+      # DEPARTMENT - Thêm khoa mới
+      # ============================================================
+      - check: 'this._meta.topic == "department-events" && this.eventType == "add"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: departments
+            operation: insert-one
+            document_map: |
+              root = this
+              root._id = this.id
+
+      # ============================================================
+      # DEPARTMENT - Cập nhật khoa
+      # ============================================================
+      - check: 'this._meta.topic == "department-events" && this.eventType == "update"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: departments
+            operation: update-one
+            upsert: false
+            filter_map: |
+              root._id = this.id
+            document_map: |
+              root."$set" = this
+
+      # ============================================================
+      # DEPARTMENT - Xóa khoa
+      # ============================================================
+      - check: 'this._meta.topic == "department-events" && this.eventType == "delete"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: departments
             operation: delete-one
             filter_map: |
               root._id = this.id
