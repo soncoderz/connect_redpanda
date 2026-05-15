@@ -64,16 +64,19 @@ output:
     cases:
       # TRƯỜNG HỢP 1: CRUD - Thêm mới (Insert)
       # Nếu đến từ topic 'crud-events' VÀ có thao tác là 'add'
+      # Dùng upsert thay vì insert-one để tránh lỗi duplicate key khi đọc lại message cũ
       - check: 'this._meta.topic == "crud-events" && this.eventType == "add"'
         output:
           mongodb:
             url: mongodb://host.docker.internal:27017
             database: app_db
             collection: resources
-            operation: insert-one # Lệnh thêm 1 tài liệu mới
+            operation: update-one
+            upsert: true # Nếu chưa có → tạo mới, nếu có rồi → cập nhật (không bao giờ lỗi duplicate)
+            filter_map: |
+              root._id = this.id
             document_map: |
-              root = this # Chèn toàn bộ nội dung tin nhắn hiện tại
-              root._id = this.id # Dùng id từ event làm _id để update/delete tìm đúng bản ghi
+              root."$set" = this
 
       # TRƯỜNG HỢP 2: CRUD - Cập nhật (Update)
       # Nếu đến từ topic 'crud-events' VÀ có thao tác là 'update'
