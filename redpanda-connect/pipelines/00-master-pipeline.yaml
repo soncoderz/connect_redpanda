@@ -141,47 +141,48 @@ output:
 
       # TRƯỜNG HỢP MẶC ĐỊNH (Fallback)
       # Nếu tin nhắn không khớp với bất kỳ điều kiện (check) nào ở trên (Ví dụ: topic appointment-events)
-      - output:
+      # - output:
+      #     mongodb:
+      #       url: mongodb://host.docker.internal:27017
+      #       database: app_db
+      #       collection: unrouted_events # Bị đẩy vào bảng chứa các sự kiện chưa phân loại
+      #       operation: insert-one
+      #       document_map: |
+      #         root = this
+      
+      # APPOINTMENT - Thêm lịch hẹn
+      - check: 'this._meta.topic == "appointment-events" && this.eventType == "add"'
+        output:
           mongodb:
             url: mongodb://host.docker.internal:27017
             database: app_db
-            collection: unrouted_events # Bị đẩy vào bảng chứa các sự kiện chưa phân loại
+            collection: appointments
             operation: insert-one
             document_map: |
               root = this
-  # APPOINTMENT - Thêm lịch hẹn
-- check: 'this._meta.topic == "appointment-events" && this.eventType == "add"'
-  output:
-    mongodb:
-      url: mongodb://host.docker.internal:27017
-      database: appointment_db
-      collection: appointments
-      operation: insert-one
-      document_map: |
-        root = this
-        root._id = this.id
+              root._id = this.id
 
-# APPOINTMENT - Sửa lịch hẹn
-- check: 'this._meta.topic == "appointment-events" && this.eventType == "update"'
-  output:
-    mongodb:
-      url: mongodb://host.docker.internal:27017
-      database: appointment_db
-      collection: appointments
-      operation: update-one
-      upsert: false
-      filter_map: |
-        root._id = this.id
-      document_map: |
-        root."$set" = this
+      # APPOINTMENT - Sửa lịch hẹn
+      - check: 'this._meta.topic == "appointment-events" && this.eventType == "update"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: appointments
+            operation: update-one
+            upsert: false
+            filter_map: |
+              root._id = this.id
+            document_map: |
+              root."$set" = this
 
-# APPOINTMENT - Xóa lịch hẹn
-- check: 'this._meta.topic == "appointment-events" && this.eventType == "delete"'
-  output:
-    mongodb:
-      url: mongodb://host.docker.internal:27017
-      database: appointment_db
-      collection: appointments
-      operation: delete-one
-      filter_map: |
-        root._id = this.id
+      # APPOINTMENT - Xóa lịch hẹn
+      - check: 'this._meta.topic == "appointment-events" && this.eventType == "delete"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017
+            database: app_db
+            collection: appointments
+            operation: delete-one
+            filter_map: |
+              root._id = this.id
