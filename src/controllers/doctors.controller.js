@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const { sendMessage } = require("../kafka/producer");
 
-const TOPIC = "doctors-events";
+const TOPIC = "doctor-events";
 
 const createDoctor = async (req, res) => {
   try {

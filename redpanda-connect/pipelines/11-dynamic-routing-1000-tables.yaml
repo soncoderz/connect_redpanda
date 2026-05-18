@@ -21,9 +21,14 @@ pipeline:
   threads: 4 # Xử lý đa luồng tốc độ cao
   processors:
     - mapping: |
+        # 'root = this': Copy lại toàn bộ dữ liệu gốc từ Kafka gửi lên (tránh làm mất data cũ)
         root = this
-        # Lưu lại metadata để tiện debug
+        
+        # Tạo thêm một Object ẩn tên là '_meta' chứa các thông tin kỹ thuật để dễ debug sau này
+        # Lấy giờ hiện tại của server (lúc xử lý tin nhắn)
         root._meta.savedAt = now()
+        
+        # Đóng dấu tên pipeline đã xử lý tin nhắn này
         root._meta.processedBy = "pipeline-11-dynamic"
 
 output:

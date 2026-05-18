@@ -6,7 +6,7 @@
 | Chỉ cập nhật, không tạo mới         | `update-one`| `false`| Chỉ update nếu tìm thấy, không làm gì nếu không có |
 | Chỉ tạo mới, không sửa nếu đã có     | `insert-one`| `false`| Đẩy vào DB, nếu trùng ID → lỗi              |
 | Thay thế toàn bộ (INSERT nếu chưa có) | `replace-one`| `true` | Ghi đè hoàn toàn, nếu không có → tạo mới     |
-
+| Xóa một bản ghi                      | `delete-one`| `-`    | Xóa bản ghi theo filter_map                    |
 
 
   - check: 'this._meta.topic == "crud-events" && this.eventType == "add"'
