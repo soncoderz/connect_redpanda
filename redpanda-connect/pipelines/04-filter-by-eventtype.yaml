@@ -13,6 +13,7 @@ input:
     start_from_oldest: true
 
 pipeline:
+
   processors:
     # bloblang: Xử lý logic if-else
     - bloblang: |

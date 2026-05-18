@@ -49,7 +49,7 @@ output:
     # URL kết nối tới MongoDB (chỉ ra localhost bên ngoài Docker)
     url: mongodb://host.docker.internal:27017
     # Tên cơ sở dữ liệu
-    database: appointment_db
+    database: app_db
     # Tên bảng (collection)
     collection: appointments
     # Thao tác: 'insert-one' nghĩa là chèn từng bản ghi mới vào

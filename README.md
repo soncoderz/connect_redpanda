@@ -56,96 +56,115 @@ Redpanda Connect xử lý theo cơ chế **bán song song (Semi-Parallel)**: Ph�
 ### Giải thích chi tiết từng tầng
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    REDPANDA CONNECT PIPELINE                        │
-│                                                                     │
-│  ┌─────────┐     ┌──────────────────────┐     ┌──────────────────┐  │
-│  │  INPUT  │     │      PIPELINE        │     │     OUTPUT       │  │
-│  │         │     │   (processors)       │     │   (switch/mongo) │  │
-│  │ Kafka   │────▶│                      │────▶│                  │  │
-│  │ Consumer│     │  threads: 2          │     │  Ghi vào MongoDB │  │
-│  │         │     │  ┌────────┐┌────────┐│     │                  │  │
-│  │ TUẦN TỰ │     │  │Luồng 1 ││Luồng 2 ││     │  TUẦN TỰ        │  │
-│  │ (1 msg  │     │  │validate││validate││     │  (phải ghi xong  │  │
-│  │  1 lần) │     │  │filter  ││filter  ││     │   mới nhận tiếp) │  │
-│  │         │     │  │enrich  ││enrich  ││     │                  │  │
-│  └─────────┘     │  └────────┘└────────┘│     └──────────────────┘  │
-│                  │   ĐA LUỒNG           │                           │
-│                  └──────────────────────┘                           │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       REDPANDA CONNECT PIPELINE                             │
+│                                                                             │
+│  ┌──────────────┐     ┌──────────────────────────────┐     ┌─────────────┐  │
+│  │    INPUT     │     │         PIPELINE             │     │   OUTPUT    │  │
+│  │              │     │       (processors)           │     │  (MongoDB)  │  │
+│  │ Kafka Consumer│───▶│                              │───▶│             │  │
+│  │              │     │  threads: 4                  │     │             │  │
+│  │ 1 partition  │     │  ┌──────┐┌──────┐┌──────┐┌──────┐│             │  │
+│  │ = 1 luồng đọc│     │  │Luồng1││Luồng2││Luồng3││Luồng4││             │  │
+│  │              │     │  └──────┘└──────┘└──────┘└──────┘│             │  │
+│  └──────────────┘     └──────────────────────────────────┘ └─────────────┘  │
+│   CÓ THỂ ĐA LUỒNG              ĐA LUỒNG                   CÓ THỂ ĐA LUỒNG│
+│   (tăng partition)          (tăng threads)              (scale instance)    │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Tầng 1: INPUT (Kafka Consumer) — Tuần tự
+### Cách làm cho TẤT CẢ đều đa luồng
 
-```yaml
-input:
-  kafka:
-    consumer_group: connect-master-group  # Kafka đảm bảo mỗi message chỉ được đọc 1 lần
-    start_from_oldest: true               # Đọc từ đầu nếu chưa có offset đã commit
+#### Tầng 1: INPUT — Tăng số Partition
+
+Kafka phân chia topic thành nhiều **partition** (phân vùng). Mỗi partition chỉ được đọc bởi 1 consumer. Vì vậy, muốn đọc đa luồng thì phải tăng số partition.
+
+```bash
+# Tạo topic với 4 partitions (mặc định là 1)
+docker exec redpanda rpk topic create doctor-events --partitions 4
+
+# Hoặc sửa topic đã tồn tại
+docker exec redpanda rpk topic alter-config doctor-events --set partition.count=4
 ```
 
-- Kafka Consumer đọc message **từng cái một** (hoặc theo batch) từ các topic.
-- `consumer_group` đảm bảo không có 2 instance nào đọc trùng message.
-- `start_from_oldest: true` nghĩa là: **lần đầu chạy** sẽ đọc từ message cũ nhất. Lần chạy sau sẽ đọc tiếp từ chỗ dừng (offset đã commit).
+Khi topic có 4 partitions và pipeline có `threads: 4`, Redpanda Connect sẽ tự gán mỗi luồng đọc 1 partition → **đọc song song**.
 
-#### Tầng 2: PIPELINE (Processors) — Đa luồng (Cấu hình được)
+#### Tầng 2: PIPELINE — Tăng `threads`
 
 ```yaml
 pipeline:
-  threads: 2  # ← Tham số quyết định số luồng xử lý song song
+  threads: 4  # Hiện tại đã cấu hình 4 luồng xử lý song song
 ```
 
-- `threads: 2` nghĩa là Redpanda Connect tạo **2 goroutine (luồng nhẹ)** để chạy song song các processor (validate, filter, enrich metadata).
-- Nếu bạn tăng lên `threads: 4`, sẽ có 4 luồng xử lý cùng lúc → nhanh hơn, nhưng tốn RAM hơn.
-- Nếu đặt `threads: 1`, mọi message sẽ được xử lý **tuần tự hoàn toàn** (chậm nhưng đảm bảo thứ tự).
+#### Tầng 3: OUTPUT — Scale nhiều instance
 
-| `threads` | Hành vi | Khi nào dùng |
-|-----------|---------|--------------|
-| `1` | Tuần tự, đảm bảo thứ tự message | Khi thứ tự xử lý quan trọng (VD: cần update trước delete) |
-| `2` (hiện tại) | 2 luồng song song | Cân bằng tốc độ và tài nguyên |
-| `4+` | Nhanh hơn, nhiều luồng hơn | Khi có lượng message lớn, server mạnh |
+Output của 1 pipeline luôn ghi **tuần tự** (phải ghi xong message A mới ghi B). Không có cách nào cấu hình đa luồng cho output trong cùng 1 instance.
 
-#### Tầng 3: OUTPUT (MongoDB) — Tuần tự, có retry
+Giải pháp: Chạy **nhiều container Connect song song**, cùng consumer_group, Kafka sẽ tự chia partition cho các instance:
 
-Đây là tầng **gây tắc nghẽn nhiều nhất**. Cơ chế hoạt động:
+```bash
+# Chạy 3 instance pipeline cùng lúc
+docker-compose up -d --scale connect=3
 
-```
-Message A ghi MongoDB → Thành công → ✅ Commit offset → Nhận Message B
-Message A ghi MongoDB → Thất bại  → ❌ Retry → Retry → Retry... (CHẶN tất cả)
+# Kafka tự chia: Instance 1 đọc partition 0,1 | Instance 2 đọc partition 2 | Instance 3 đọc partition 3
+# → 3 output chạy song song, mỗi cái ghi một phần dữ liệu
 ```
 
-- Mỗi message **PHẢI** được ghi thành công vào MongoDB, rồi Redpanda Connect mới commit offset và nhận message tiếp theo.
-- Nếu output bị lỗi (VD: duplicate key, MongoDB sập), Redpanda Connect sẽ **retry vô hạn** → TẮC NGHẼN toàn bộ pipeline.
-- Đây chính là lý do tại sao một lỗi `duplicate key` ở `res-001` có thể **chặn hết** mọi message khác (doctors, departments, payments...).
+### Bảng ưu/nhược điểm: Đa luồng toàn bộ
 
-### Ngoại lệ: Broker Fan-Out — Song song trong output
+| | ✅ Ưu điểm | ❌ Nhược điểm |
+|---|---|---|
+| **Tăng Partition** | Đọc nhanh hơn, nhiều luồng đọc song song | Không thể giảm partition sau khi tăng. Message cùng `id` có thể vào partition khác nhau → mất thứ tự |
+| **Tăng `threads`** | Xử lý (validate, filter) nhanh hơn rõ rệt | Tốn RAM. Thứ tự message không được đảm bảo (message B có thể xử lý xong trước message A) |
+| **Scale instance** | Output ghi song song, throughput cao nhất | Tốn tài nguyên server (mỗi instance = 1 container Docker). Cần topic có đủ partition (≥ số instance) |
+| **Broker Fan-Out** | Ghi nhiều bảng cùng lúc từ 1 event | Tất cả output phải thành công. Nếu 1 cái lỗi → chặn toàn bộ |
 
-Khi dùng `broker` với `pattern: fan_out`, các output bên trong sẽ chạy **song song**:
+### Rủi ro lớn nhất của đa luồng: MẤT THỨ TỰ
 
-```yaml
-output:
-  broker:
-    pattern: fan_out
-    outputs:
-      - mongodb: { collection: doctors }      # ← Chạy song song
-      - mongodb: { collection: departments }  # ← Chạy song song
+```
+VÍ DỤ: Người dùng gửi 2 request liên tiếp:
+  1. POST /api/doctors  (eventType: "add")     → Tạo bác sĩ
+  2. PUT  /api/doctors  (eventType: "update")  → Sửa bác sĩ
+
+Với threads: 1 (tuần tự):
+  → add chạy trước → update chạy sau → ĐÚng ✅
+
+Với threads: 4 (đa luồng):
+  → update có thể chạy TRƯỚC add → MongoDB báo lỗi "không tìm thấy bác sĩ để sửa" → SAI ❌
 ```
 
-Tuy nhiên, **CẢ HAI phải thành công** thì message mới được coi là hoàn tất. Nếu 1 trong 2 lỗi → toàn bộ message bị retry.
+### Khuyến nghị cho dự án hiện tại
+
+| Cấu hình | Giá trị | Lý do |
+|-----------|---------|-------|
+| `threads` | `4` | Đủ nhanh cho xử lý, chấp nhận rủi ro mất thứ tự nhỏ |
+| Partitions | `1` (mặc định) | Giữ thứ tự trong từng topic. Tăng khi lượng message thực sự lớn |
+| Scale instance | `1` | Đủ cho giai đoạn phát triển. Tăng khi lên production |
 
 ### Tóm tắt bằng hình ảnh
 
 ```
-                    threads: 2
-                   ┌──────────┐
-      Kafka        │ Processor│        MongoDB
-     ┌───┐    ┌───▶│ Luồng 1  │───┐    ┌───┐
-     │ A │────┤    └──────────┘   ├───▶│ A │──▶ OK → Nhận C
-     │ B │    │    ┌──────────┐   │    │ B │──▶ Lỗi → Retry mãi → TẮC!
-     │ C │    └───▶│ Luồng 2  │───┘    │   │
-     │ D │         └──────────┘        │   │   C, D phải chờ B ghi xong
-     └───┘                             └───┘
-   Hàng đợi       Xử lý song song    Ghi tuần tự
+ CẤU HÌNH HIỆN TẠI (threads: 4, 1 partition, 1 instance):
+ 
+      Kafka          4 Luồng xử lý          MongoDB
+     ┌───┐      ┌──▶ Luồng 1 ──┐         ┌───┐
+     │ A │──────┤──▶ Luồng 2 ──┼────────▶│ A │──▶ OK
+     │ B │  đọc ├──▶ Luồng 3 ──┤   ghi   │ B │──▶ OK
+     │ C │ tuần ├──▶ Luồng 4 ──┘  tuần   │ C │──▶ OK
+     │ D │  tự  │                  tự     │ D │
+     └───┘      │                         └───┘
+            (1 partition              (1 instance
+             = đọc tuần tự)           = ghi tuần tự)
+ 
+ CẤU HÌNH TỐI ĐA (threads: 4, 4 partitions, 3 instances):
+ 
+    Kafka (4 partitions)          MongoDB (3 instances ghi song song)
+   ┌──── P0 ────┐  Instance 1   ┌───┐
+   ├──── P1 ────┤ ────────────▶ │   │ Ghi song song
+   ├──── P2 ────┤  Instance 2   │ DB│
+   ├──── P3 ────┤ ────────────▶ │   │
+   └────────────┘  Instance 3   └───┘
+    Đọc song song  ──────────▶  Throughput x3
 ```
 
 ---

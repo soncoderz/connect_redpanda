@@ -21,7 +21,7 @@ input:
     start_from_oldest: true # Đọc từ đầu nếu chưa có lịch sử đọc
 
 pipeline:
-  threads: 2 # Xử lý đa luồng (2 luồng song song) để tăng tốc độ
+  threads: 4 # Xử lý đa luồng (4 luồng song song) để tối đa tốc độ
   processors:
     # BƯỚC 1: Kiểm tra tính hợp lệ (Validate) bằng ngôn ngữ Bloblang
     - bloblang: |

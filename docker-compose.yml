@@ -45,7 +45,7 @@ services:
     container_name: connect
     volumes:
       - ./redpanda-connect/pipelines:/pipelines
-    command: run /pipelines/00-master-pipeline.yaml
+    command: run /pipelines/12-dynamic-full-crud.yaml
     restart: unless-stopped
     networks:
       - redpanda-net

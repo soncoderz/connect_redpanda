@@ -9,7 +9,9 @@ input:
     addresses:
       - redpanda:9092 # Địa chỉ máy chủ Kafka
     topics:
-      - users         # Chỉ quan tâm và đọc duy nhất topic 'users'
+      - users   
+      - doctor-events   
+      - appointment-events   # Đọc cả topic users và doctor-events
     consumer_group: connect-01-users-group # Nhóm tiêu thụ riêng biệt
     start_from_oldest: true # Bắt đầu đọc từ tin nhắn cũ nhất
 
@@ -32,11 +34,36 @@ pipeline:
 
 output:
   # Cấu hình nơi xuất dữ liệu ra
-  mongodb:
-    url: mongodb://host.docker.internal:27017 # Địa chỉ MongoDB
-    database: app_db          # Tên cơ sở dữ liệu
-    collection: users         # Tên collection sẽ lưu vào
-    operation: insert-one     # Chế độ: chèn từng bản ghi
-    document_map: |
-      # Nội dung đem đi chèn chính là dữ liệu đã xử lý ('root' ở trên)
-      root = this
+  switch:
+    cases:
+      - check: '@kafka_topic == "users"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017 # Địa chỉ MongoDB
+            database: app_db          # Tên cơ sở dữ liệu
+            collection: users         # Tên collection sẽ lưu vào
+            operation: insert-one     # Chế độ: chèn từng bản ghi
+            document_map: |
+              # Nội dung đem đi chèn chính là dữ liệu đã xử lý ('root' ở trên)
+              root = this
+
+      - check: '@kafka_topic == "doctor-events"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017 # Địa chỉ MongoDB
+            database: app_db          # Tên cơ sở dữ liệu
+            collection: doctors       # Sửa lại thành bảng 'doctors'
+            operation: insert-one     # Chế độ: chèn từng bản ghi
+            document_map: |
+              # Nội dung đem đi chèn chính là dữ liệu đã xử lý ('root' ở trên)
+              root = this
+      - check: '@kafka_topic == "appointment_event"'
+        output:
+          mongodb:
+            url: mongodb://host.docker.internal:27017 # Địa chỉ MongoDB
+            database: app_db          # Tên cơ sở dữ liệu
+            collection: appointments       # Sửa lại thành bảng 'doctors'
+            operation: insert-one     # Chế độ: chèn từng bản ghi
+            document_map: |
+              # Nội dung đem đi chèn chính là dữ liệu đã xử lý ('root' ở trên)
+              root = this
