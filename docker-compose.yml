@@ -1,77 +1,54 @@
 services:
-  # ── Redpanda (Kafka-compatible broker) ────────────────────
   redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+    image: docker.redpanda.com/redpandadata/redpanda:latest
     container_name: redpanda
     command:
-      - redpanda start
-      - --smp 1
-      - --memory 512M
+      - redpanda
+      - start
       - --overprovisioned
-      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
-      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
     ports:
       - "19092:19092"
       - "9644:9644"
-    networks:
-      - redpanda-net
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
     healthcheck:
-      test: [ "CMD", "rpk", "cluster", "health" ]
+      test: ["CMD-SHELL", "rpk cluster health -X brokers=redpanda:9092 | grep -E 'Healthy:.+true'"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 12
+      start_period: 20s
 
-  # ── MongoDB ───────────────────────────────────────────────
-  mongo:
-    image: mongo:7
-    container_name: mongo
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    networks:
-      - redpanda-net
-    healthcheck:
-      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
-  # ── Redpanda Connect: 1 container duy nhất ────────────────
-  # Chạy pipeline nào thì đổi tên file yaml ở dòng command bên dưới
-  # Mặc định: 00-master-pipeline.yaml (cover tất cả use-case)
-  connect:
-    image: docker.redpanda.com/redpandadata/connect:4
-    container_name: connect
-    volumes:
-      - ./redpanda-connect/pipelines:/pipelines
-    command: run /pipelines/12-dynamic-full-crud.yaml
-    restart: unless-stopped
-    networks:
-      - redpanda-net
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: redpanda-init
     depends_on:
       redpanda:
         condition: service_healthy
-      mongo:
-        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "rpk topic create users -X brokers=redpanda:9092 || true;
+       rpk topic create mail-logs -X brokers=redpanda:9092 || true"
 
-  # ── Redpanda Console (Giao diện Web UI) ────────────────────
-  console:
-    image: docker.redpanda.com/redpandadata/console:v2.8.0
-    container_name: redpanda-console
-    ports:
-      - "8080:8080"
-    environment:
-      KAFKA_BROKERS: redpanda:9092
-    networks:
-      - redpanda-net
+  redpanda-connect:
+    image: docker.redpanda.com/redpandadata/connect:latest
+    container_name: redpanda-connect
+    command: ["run", "/connect.yaml"]
     depends_on:
-      redpanda:
-        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./redpanda-connect/pipelines/00-master-pipeline.yaml:/connect.yaml:ro
 
-networks:
-  redpanda-net:
-    driver: bridge
 
 volumes:
-  mongo_data:
+  redpanda-data:

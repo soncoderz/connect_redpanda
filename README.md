@@ -1,431 +1,1219 @@
-# 🚀 Redpanda Connect × MongoDB — Complete Pipeline Guide
+# 🚀 Redpanda Connect × MongoDB × SMTP — Complete Pipeline Guide
 
-Dự án này là một hệ thống **Event-Driven Architecture (Kiến trúc Hướng Sự kiện)** hoàn chỉnh sử dụng **Node.js, Kafka (Redpanda), Redpanda Connect, và MongoDB**.
+Dự án này là một demo **Event-Driven Architecture (Kiến trúc hướng sự kiện)** sử dụng **Node.js, Redpanda/Kafka, Redpanda Connect, MongoDB và SMTP Gmail**.
 
-Nó giải quyết một bài toán phổ biến trong Microservices: **Làm sao để lưu dữ liệu vào cơ sở dữ liệu một cách bất đồng bộ và xử lý cập nhật nhiều bảng cùng lúc thông qua Kafka?**
+Mục tiêu chính của project:
+
+- Nhận dữ liệu từ Postman/API.
+- Đẩy dữ liệu vào Redpanda topic.
+- Cho Redpanda Connect đọc topic, xử lý dữ liệu rồi ghi vào MongoDB.
+- Tạo tài khoản user và gửi email xác nhận.
+- Ghi log kết quả gửi mail thành công/thất bại vào MongoDB thông qua Redpanda.
 
 ---
 
-## 📋 Mục lục
+## 📋 Mục Lục
 
 - [🏗 Kiến trúc tổng quan](#-kiến-trúc-tổng-quan)
-- [⚙️ Cơ chế xử lý của Redpanda Connect (Tuần tự hay Đa luồng?)](#️-cơ-chế-xử-lý-của-redpanda-connect-tuần-tự-hay-đa-luồng)
-- [💻 Giải thích luồng dữ liệu (Code Walkthrough)](#-giải-thích-luồng-dữ-liệu-code-walkthrough)
-  - [1. Node.js Controller (Gửi Event)](#1-nodejs-controller-gửi-event)
-  - [2. Pipeline Master (Nhận Event & Xử lý)](#2-pipeline-master-nhận-event--xử-lý)
-  - [3. Kỹ thuật cập nhật nhiều bảng (Broker Fan-Out)](#3-kỹ-thuật-cập-nhật-nhiều-bảng-broker-fan-out)
-- [⚠️ Bẫy thường gặp (Gotchas)](#️-bẫy-thường-gặp-gotchas)
+- [🔁 Luồng xử lý chính](#-luồng-xử-lý-chính)
+- [📦 Topic và Collection](#-topic-và-collection)
+- [⚙️ Cơ chế hoạt động của Redpanda Connect](#️-cơ-chế-hoạt-động-của-redpanda-connect)
+- [💻 Code Walkthrough](#-code-walkthrough)
+  - [1. Express Server](#1-express-server)
+  - [2. Publish Controller](#2-publish-controller)
+  - [3. User Controller](#3-user-controller)
+  - [4. Mail Service](#4-mail-service)
+  - [5. Mail Log Service](#5-mail-log-service)
+  - [6. Redpanda Connect Pipeline](#6-redpanda-connect-pipeline)
+- [🔐 Cấu hình môi trường](#-cấu-hình-môi-trường)
+- [🚀 Cách chạy project](#-cách-chạy-project)
+- [🧪 Test bằng Postman](#-test-bằng-postman)
+- [🧾 API Reference](#-api-reference)
 - [📁 Cấu trúc thư mục](#-cấu-trúc-thư-mục)
-- [🚀 Cách chạy & Khắc phục lỗi](#-cách-chạy--khắc-phục-lỗi)
+- [⚠️ Lỗi thường gặp](#️-lỗi-thường-gặp)
+- [📝 Ghi chú kỹ thuật](#-ghi-chú-kỹ-thuật)
 
 ---
 
-## 🏗 Kiến trúc tổng quan
+## 🏗 Kiến Trúc Tổng Quan
 
-Mọi thao tác ghi/xóa/sửa (CRUD) từ người dùng không được ghi trực tiếp vào MongoDB. Thay vào đó, nó đi qua Kafka theo luồng sau:
+Project không ghi dữ liệu trực tiếp vào MongoDB từ API. Thay vào đó, API chỉ có nhiệm vụ tạo event và gửi event vào Redpanda. Redpanda Connect sẽ là thành phần đọc event từ Redpanda và ghi vào MongoDB.
 
+```txt
+┌──────────────┐
+│   Postman    │
+│   Client     │
+└──────┬───────┘
+       │ HTTP Request
+       ▼
+┌────────────────────┐
+│  Node.js Express   │
+│  API Server        │
+└──────┬─────────────┘
+       │ KafkaJS Producer
+       ▼
+┌────────────────────┐
+│ Redpanda / Kafka   │
+│ topics:            │
+│ - users            │
+│ - mail-logs        │
+└──────┬─────────────┘
+       │ Kafka Consumer
+       ▼
+┌────────────────────┐
+│ Redpanda Connect   │
+│ Pipeline YAML      │
+└──────┬─────────────┘
+       │ MongoDB output
+       ▼
+┌────────────────────┐
+│ MongoDB            │
+│ app_db.users       │
+│ app_db.mail_logs   │
+└────────────────────┘
 ```
-┌──────────────┐     ┌──────────────────┐     ┌─────────────────────┐     ┌──────────┐
-│   Client     │────▶│  Node.js Express │────▶│  Redpanda (Kafka)   │────▶│ Redpanda │
-│  (Postman)   │ HTTP│  API Server      │ Gửi │  Broker             │ Đọc │ Connect  │
-│              │ POST│  (Port 3000)     │Event│  Topics:            │     │ Pipeline │
-│              │     │                  │     │  doctor-events      │     │          │
-└──────────────┘     └──────────────────┘     │  department-events  │     └────┬─────┘
-                                              │  users, orders...   │          │
-                                              └─────────────────────┘     ┌────▼─────┐
-                                                                          │ MongoDB  │
-                                                                          │ (app_db) │
-                                                                          └──────────┘
-```
 
-### Tại sao lại làm phức tạp như vậy?
-1. **Chống quá tải (Buffer):** Khi có hàng chục ngàn request cùng lúc, Node.js chỉ việc đẩy vào Kafka (rất nhanh). Pipeline sẽ từ từ nhặt ra để ghi vào MongoDB, giúp DB không bị sập.
-2. **Decoupling (Giảm phụ thuộc):** App Node.js không cần biết MongoDB lưu trữ ra sao. Nó chỉ quan tâm là "đã có sự kiện tạo bác sĩ xảy ra".
-3. **Cập nhật đa bảng dễ dàng:** Một sự kiện (như update) có thể kích hoạt nhiều thao tác song song trên nhiều bảng khác nhau mà không cần Node.js phải xử lý giao dịch (transaction) phức tạp.
+### Vì Sao Không Ghi Thẳng Vào MongoDB?
+
+1. **Tách trách nhiệm rõ ràng**
+
+   Node.js chỉ nhận request và publish event. Việc lưu dữ liệu do Redpanda Connect xử lý.
+
+2. **Dễ mở rộng**
+
+   Nếu sau này cần thêm xử lý như gửi webhook, ghi log, ghi sang database khác, ta có thể mở rộng pipeline thay vì sửa toàn bộ API.
+
+3. **Có log và retry tốt hơn**
+
+   Message đã vào Redpanda thì có thể được đọc lại, debug lại hoặc replay khi cần.
+
+4. **Phù hợp kiến trúc event-driven**
+
+   API phát ra sự kiện, các service/pipeline khác tự xử lý theo nhu cầu.
 
 ---
 
-## ⚙️ Cơ chế xử lý của Redpanda Connect (Tuần tự hay Đa luồng?)
+## 🔁 Luồng Xử Lý Chính
 
-Đây là phần rất quan trọng cần hiểu rõ, vì nó ảnh hưởng trực tiếp đến hiệu năng và cách debug lỗi.
+### Luồng 1: Publish User JSON Từ Postman
 
-### Trả lời ngắn gọn
-
-Redpanda Connect xử lý theo cơ chế **bán song song (Semi-Parallel)**: Phần PIPELINE (xử lý/biến đổi dữ liệu) chạy đa luồng, nhưng phần INPUT (đọc) và OUTPUT (ghi) chạy theo cơ chế hàng đợi — **1 message phải ghi thành công rồi mới nhận message tiếp theo**.
-
-### Giải thích chi tiết từng tầng
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       REDPANDA CONNECT PIPELINE                             │
-│                                                                             │
-│  ┌──────────────┐     ┌──────────────────────────────┐     ┌─────────────┐  │
-│  │    INPUT     │     │         PIPELINE             │     │   OUTPUT    │  │
-│  │              │     │       (processors)           │     │  (MongoDB)  │  │
-│  │ Kafka Consumer│───▶│                              │───▶│             │  │
-│  │              │     │  threads: 4                  │     │             │  │
-│  │ 1 partition  │     │  ┌──────┐┌──────┐┌──────┐┌──────┐│             │  │
-│  │ = 1 luồng đọc│     │  │Luồng1││Luồng2││Luồng3││Luồng4││             │  │
-│  │              │     │  └──────┘└──────┘└──────┘└──────┘│             │  │
-│  └──────────────┘     └──────────────────────────────────┘ └─────────────┘  │
-│   CÓ THỂ ĐA LUỒNG              ĐA LUỒNG                   CÓ THỂ ĐA LUỒNG│
-│   (tăng partition)          (tăng threads)              (scale instance)    │
-└─────────────────────────────────────────────────────────────────────────────┘
+```txt
+POST /api/publish/users
+  -> Node.js nhận JSON body
+  -> Node.js thêm id, eventType, eventTime nếu thiếu
+  -> KafkaJS gửi message vào topic users
+  -> Redpanda Connect đọc topic users
+  -> Pipeline thêm _meta
+  -> MongoDB lưu vào app_db.users
 ```
 
-### Cách làm cho TẤT CẢ đều đa luồng
+Ví dụ JSON gửi từ Postman:
 
-#### Tầng 1: INPUT — Tăng số Partition
-
-Kafka phân chia topic thành nhiều **partition** (phân vùng). Mỗi partition chỉ được đọc bởi 1 consumer. Vì vậy, muốn đọc đa luồng thì phải tăng số partition.
-
-```bash
-# Tạo topic với 4 partitions (mặc định là 1)
-docker exec redpanda rpk topic create doctor-events --partitions 4
-
-# Hoặc sửa topic đã tồn tại
-docker exec redpanda rpk topic alter-config doctor-events --set partition.count=4
+```json
+{
+  "id": "user-001",
+  "name": "Nguyen Van A",
+  "email": "receiver@example.com",
+  "status": "from_postman"
+}
 ```
 
-Khi topic có 4 partitions và pipeline có `threads: 4`, Redpanda Connect sẽ tự gán mỗi luồng đọc 1 partition → **đọc song song**.
+Sau khi qua API, event được đẩy vào Redpanda có dạng:
 
-#### Tầng 2: PIPELINE — Tăng `threads`
-
-```yaml
-pipeline:
-  threads: 4  # Hiện tại đã cấu hình 4 luồng xử lý song song
+```json
+{
+  "id": "user-001",
+  "name": "Nguyen Van A",
+  "email": "receiver@example.com",
+  "status": "from_postman",
+  "eventType": "add",
+  "eventTime": "2026-05-18T..."
+}
 ```
 
-#### Tầng 3: OUTPUT — Scale nhiều instance
+Sau khi qua Redpanda Connect, dữ liệu lưu vào MongoDB có thêm `_meta`:
 
-Output của 1 pipeline luôn ghi **tuần tự** (phải ghi xong message A mới ghi B). Không có cách nào cấu hình đa luồng cho output trong cùng 1 instance.
-
-Giải pháp: Chạy **nhiều container Connect song song**, cùng consumer_group, Kafka sẽ tự chia partition cho các instance:
-
-```bash
-# Chạy 3 instance pipeline cùng lúc
-docker-compose up -d --scale connect=3
-
-# Kafka tự chia: Instance 1 đọc partition 0,1 | Instance 2 đọc partition 2 | Instance 3 đọc partition 3
-# → 3 output chạy song song, mỗi cái ghi một phần dữ liệu
-```
-
-### Bảng ưu/nhược điểm: Đa luồng toàn bộ
-
-| | ✅ Ưu điểm | ❌ Nhược điểm |
-|---|---|---|
-| **Tăng Partition** | Đọc nhanh hơn, nhiều luồng đọc song song | Không thể giảm partition sau khi tăng. Message cùng `id` có thể vào partition khác nhau → mất thứ tự |
-| **Tăng `threads`** | Xử lý (validate, filter) nhanh hơn rõ rệt | Tốn RAM. Thứ tự message không được đảm bảo (message B có thể xử lý xong trước message A) |
-| **Scale instance** | Output ghi song song, throughput cao nhất | Tốn tài nguyên server (mỗi instance = 1 container Docker). Cần topic có đủ partition (≥ số instance) |
-| **Broker Fan-Out** | Ghi nhiều bảng cùng lúc từ 1 event | Tất cả output phải thành công. Nếu 1 cái lỗi → chặn toàn bộ |
-
-### Rủi ro lớn nhất của đa luồng: MẤT THỨ TỰ
-
-```
-VÍ DỤ: Người dùng gửi 2 request liên tiếp:
-  1. POST /api/doctors  (eventType: "add")     → Tạo bác sĩ
-  2. PUT  /api/doctors  (eventType: "update")  → Sửa bác sĩ
-
-Với threads: 1 (tuần tự):
-  → add chạy trước → update chạy sau → ĐÚng ✅
-
-Với threads: 4 (đa luồng):
-  → update có thể chạy TRƯỚC add → MongoDB báo lỗi "không tìm thấy bác sĩ để sửa" → SAI ❌
-```
-
-### Khuyến nghị cho dự án hiện tại
-
-| Cấu hình | Giá trị | Lý do |
-|-----------|---------|-------|
-| `threads` | `4` | Đủ nhanh cho xử lý, chấp nhận rủi ro mất thứ tự nhỏ |
-| Partitions | `1` (mặc định) | Giữ thứ tự trong từng topic. Tăng khi lượng message thực sự lớn |
-| Scale instance | `1` | Đủ cho giai đoạn phát triển. Tăng khi lên production |
-
-### Tóm tắt bằng hình ảnh
-
-```
- CẤU HÌNH HIỆN TẠI (threads: 4, 1 partition, 1 instance):
- 
-      Kafka          4 Luồng xử lý          MongoDB
-     ┌───┐      ┌──▶ Luồng 1 ──┐         ┌───┐
-     │ A │──────┤──▶ Luồng 2 ──┼────────▶│ A │──▶ OK
-     │ B │  đọc ├──▶ Luồng 3 ──┤   ghi   │ B │──▶ OK
-     │ C │ tuần ├──▶ Luồng 4 ──┘  tuần   │ C │──▶ OK
-     │ D │  tự  │                  tự     │ D │
-     └───┘      │                         └───┘
-            (1 partition              (1 instance
-             = đọc tuần tự)           = ghi tuần tự)
- 
- CẤU HÌNH TỐI ĐA (threads: 4, 4 partitions, 3 instances):
- 
-    Kafka (4 partitions)          MongoDB (3 instances ghi song song)
-   ┌──── P0 ────┐  Instance 1   ┌───┐
-   ├──── P1 ────┤ ────────────▶ │   │ Ghi song song
-   ├──── P2 ────┤  Instance 2   │ DB│
-   ├──── P3 ────┤ ────────────▶ │   │
-   └────────────┘  Instance 3   └───┘
-    Đọc song song  ──────────▶  Throughput x3
-```
-
----
-
-## 💻 Giải thích luồng dữ liệu (Code Walkthrough)
-
-Hãy cùng đi theo luồng của một Request tạo và cập nhật Bác sĩ (`doctors`) để xem code hoạt động thế nào.
-
-### 1. Node.js Controller (Gửi Event)
-
-File: `src/controllers/crud.controller.js`
-
-Thay vì lưu thẳng vào Database, Node.js gom dữ liệu lại thành một cục gọi là **Event** (Sự kiện) và đẩy lên Kafka.
-
-```javascript
-// Khai báo tường minh topic tương ứng với từng đối tượng
-const TOPICS = {
-  users:    "users",       // Event liên quan user → chui vào topic "users"
-  orders:   "orders",      // Event liên quan đơn hàng → topic "orders"
-  payments: "payments",    // Event liên quan thanh toán → topic "payments"
-};
-
-// Hàm tạo mới user
-const createUser = async (req, res) => {
-  try {
-    // 1. Tạo cục Event bao gồm: ID, Loại sự kiện (add), Thời gian, và Dữ liệu
-    const event = {
-      id: crypto.randomUUID(),           // Cấp 1 mã ID độc nhất (UUID v4)
-      eventType: "add",                  // Loại hành động: Thêm mới
-      eventTime: new Date().toISOString(),
-      ...req.body                        // Lấy dữ liệu người dùng gửi lên (name, email...)
-    };
-
-    // 2. Gửi cục Event này vào Kafka Topic "users"
-    //    Chính biến TOPICS.users ở trên quyết định event đi vào topic nào
-    await sendMessage(TOPICS.users, event);
-
-    // 3. Trả về cho người dùng báo thành công
-    //    (lúc này DB chưa chắc đã lưu xong, nhưng Kafka đã nhận)
-    res.status(201).json({ success: true, eventId: event.id });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+```json
+{
+  "_id": "user-001",
+  "id": "user-001",
+  "name": "Nguyen Van A",
+  "email": "receiver@example.com",
+  "status": "from_postman",
+  "eventType": "add",
+  "eventTime": "2026-05-18T...",
+  "_meta": {
+    "topic": "users",
+    "processedAt": "2026-05-18T...",
+    "pipeline": "simple-redpanda-to-mongodb"
   }
-};
+}
 ```
 
-File: `src/controllers/doctors.controller.js` — Tương tự nhưng topic là `"doctor-events"`.
+### Luồng 2: Tạo User Và Gửi Mail Xác Nhận
+
+```txt
+POST /api/users/register
+  -> Node.js validate email
+  -> Tạo user event trạng thái pending_email_confirmation
+  -> Publish user event vào topic users
+  -> Gửi email xác nhận bằng SMTP
+  -> Tạo mail log success hoặc failed
+  -> Publish mail log vào topic mail-logs
+  -> Redpanda Connect ghi:
+       users     -> app_db.users
+       mail-logs -> app_db.mail_logs
+```
+
+Request:
+
+```json
+{
+  "name": "Nguyen Van A",
+  "email": "receiver@example.com"
+}
+```
+
+User event:
+
+```json
+{
+  "id": "uuid",
+  "eventType": "add",
+  "name": "Nguyen Van A",
+  "email": "receiver@example.com",
+  "status": "pending_email_confirmation",
+  "emailVerified": false,
+  "emailVerificationToken": "random-token",
+  "eventTime": "2026-05-18T..."
+}
+```
+
+Mail log nếu gửi thành công:
+
+```json
+{
+  "id": "uuid",
+  "eventType": "add",
+  "mailRequestId": "uuid",
+  "mailId": "<provider-message-id>",
+  "providerMessageId": "<provider-message-id>",
+  "userId": "uuid",
+  "to": "receiver@example.com",
+  "subject": "Xac nhan tai khoan",
+  "template": "account_confirmation",
+  "status": "success",
+  "eventTime": "2026-05-18T...",
+  "sentAt": "2026-05-18T..."
+}
+```
+
+Mail log nếu gửi thất bại:
+
+```json
+{
+  "id": "uuid",
+  "eventType": "add",
+  "mailRequestId": "uuid",
+  "mailId": "uuid",
+  "providerMessageId": null,
+  "userId": "uuid",
+  "to": "receiver@example.com",
+  "subject": "Xac nhan tai khoan",
+  "template": "account_confirmation",
+  "status": "failed",
+  "error": {
+    "message": "Missing SMTP_USER or SMTP_PASS. Use an SMTP app password in .env.",
+    "code": null
+  },
+  "eventTime": "2026-05-18T...",
+  "failedAt": "2026-05-18T..."
+}
+```
+
+### Luồng 3: Gửi 5 Mail Liên Tục
+
+```txt
+POST /api/users/send-five-mails
+  -> Lặp tối đa 5 lần
+  -> Mỗi lần gửi một email xác nhận
+  -> Mỗi lần tạo một mail log riêng
+  -> Publish từng log vào topic mail-logs
+  -> Redpanda Connect ghi từng log vào app_db.mail_logs
+```
+
+Request:
+
+```json
+{
+  "userId": "user-001",
+  "name": "Nguyen Van A",
+  "email": "receiver@example.com",
+  "count": 5
+}
+```
+
+`count` được giới hạn từ `1` đến `5` để tránh spam quá nhiều trong demo.
 
 ---
 
-### 2. Pipeline Master (Nhận Event & Xử lý)
+## 📦 Topic Và Collection
 
-File: `redpanda-connect/pipelines/00-master-pipeline.yaml`
+Pipeline hiện tại chỉ đọc 2 topic đơn giản:
 
-Đây là "Trái tim" của hệ thống. Nó là một file cấu hình YAML gồm 3 khối: INPUT → PIPELINE → OUTPUT.
+| Redpanda Topic | Ý nghĩa | MongoDB Database | MongoDB Collection |
+|---|---|---|---|
+| `users` | Dữ liệu user, tạo tài khoản, xác nhận tài khoản | `app_db` | `users` |
+| `mail-logs` | Log kết quả gửi email thành công/thất bại | `app_db` | `mail_logs` |
+
+File pipeline:
+
+```txt
+redpanda-connect/pipelines/00-master-pipeline.yaml
+```
+
+---
+
+## ⚙️ Cơ Chế Hoạt Động Của Redpanda Connect
+
+Redpanda Connect hoạt động theo 3 khối chính:
+
+```txt
+INPUT  ->  PIPELINE PROCESSORS  ->  OUTPUT
+```
+
+### 1. Input
+
+Input đọc message từ Redpanda/Kafka:
 
 ```yaml
-# ═══════════════════════════════════════════════════════════
-# KHỐI 1: INPUT — Nơi dữ liệu đi vào
-# ═══════════════════════════════════════════════════════════
 input:
   kafka:
-    addresses: [redpanda:9092]     # Địa chỉ Kafka broker (trong Docker)
-    topics:                         # Lắng nghe đồng thời nhiều topic
+    addresses:
+      - redpanda:9092
+    topics:
       - users
-      - orders
-      - payments
-      - crud-events
-      - appointment-events
-      - doctor-events
-      - department-events
-    consumer_group: connect-master-group  # Kafka theo dõi đã đọc đến đâu
-    start_from_oldest: true               # Lần đầu: đọc từ message cũ nhất
+      - mail-logs
+    consumer_group: simple-connect-group
+    start_from_oldest: true
+```
 
-# ═══════════════════════════════════════════════════════════
-# KHỐI 2: PIPELINE — Xử lý trung gian (Nhào nặn dữ liệu)
-# ═══════════════════════════════════════════════════════════
+Ý nghĩa:
+
+| Field | Ý nghĩa |
+|---|---|
+| `addresses` | Địa chỉ broker Kafka/Redpanda mà Connect sẽ đọc |
+| `topics` | Danh sách topic cần lắng nghe |
+| `consumer_group` | Nhóm consumer để Kafka quản lý offset |
+| `start_from_oldest` | Nếu group mới, đọc từ message cũ nhất |
+
+### 2. Pipeline Processors
+
+Pipeline hiện tại rất đơn giản, chỉ giữ nguyên message và thêm `_meta`:
+
+```yaml
 pipeline:
-  threads: 2   # 2 luồng xử lý song song (xem mục "Cơ chế xử lý" ở trên)
   processors:
-    # Bước 1: Kiểm tra tính hợp lệ
     - bloblang: |
-        let hasId    = this.id != null
-        let hasEvent = this.eventType != null && this.eventType != ""
         root = this
-        root._meta.valid = $hasId && $hasEvent   # Đánh dấu hợp lệ (true) hay không (false)
-        root._meta.topic = @kafka_topic           # Lưu lại tên topic xuất phát
+        root._meta.topic = @kafka_topic
+        root._meta.processedAt = now()
+        root._meta.pipeline = "simple-redpanda-to-mongodb"
+```
 
-    # Bước 2: Lọc bỏ rác
-    - bloblang: |
-        # Nếu hợp lệ → cho đi tiếp. Nếu không → gọi deleted() để vứt bỏ.
-        root = if this._meta.valid { this } else { deleted() }
+Ý nghĩa:
 
-# ═══════════════════════════════════════════════════════════
-# KHỐI 3: OUTPUT — Nơi dữ liệu đi ra (rẽ nhánh theo topic + eventType)
-# ═══════════════════════════════════════════════════════════
+| Field | Ý nghĩa |
+|---|---|
+| `root = this` | Giữ nguyên toàn bộ JSON event |
+| `@kafka_topic` | Lấy tên topic gốc mà message đi vào |
+| `processedAt` | Thời gian Redpanda Connect xử lý message |
+| `pipeline` | Tên pipeline để debug |
+
+### 3. Output
+
+Output dùng `switch` để route message theo topic:
+
+```yaml
 output:
-  switch:  # Giống lệnh switch/case trong lập trình
+  switch:
     cases:
-      # Nếu event đến từ topic "doctor-events" VÀ eventType là "add"
-      - check: 'this._meta.topic == "doctor-events" && this.eventType == "add"'
+      - check: 'this._meta.topic == "users"'
         output:
           mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: doctors         # → Ghi vào bảng doctors
-            operation: insert-one       # → Chèn 1 bản ghi mới
-            document_map: |
-              root = this               # Lấy toàn bộ event làm dữ liệu
-              root._id = this.id        # Dùng id của event làm khóa chính MongoDB
-```
+            collection: users
 
----
-
-### 3. Kỹ thuật cập nhật nhiều bảng (Broker Fan-Out)
-
-Bài toán: Khi chuyển bác sĩ sang khoa khác (Update), ta vừa phải **sửa thông tin trong bảng Bác sĩ**, vừa phải **thêm ID bác sĩ đó vào mảng danh sách của bảng Khoa**.
-
-Giải pháp: Dùng `broker` với pattern `fan_out` — 1 Event đi vào sẽ được nhân bản ra và kích hoạt 2 hành động ghi DB chạy song song.
-
-```yaml
-      # Cập nhật bác sĩ → SỬA ĐỒNG THỜI 2 BẢNG
-      - check: 'this._meta.topic == "doctor-events" && this.eventType == "update"'
+      - check: 'this._meta.topic == "mail-logs"'
         output:
-          broker:
-            pattern: fan_out   # Nhân bản event ra cho TẤT CẢ outputs bên dưới
-            outputs:
-
-              # LUỒNG 1: Sửa bảng doctors
-              - mongodb:
-                  collection: doctors
-                  operation: update-one        # Cập nhật 1 bản ghi
-                  filter_map: |
-                    root._id = this.id         # Tìm bác sĩ theo ID
-                  document_map: |
-                    root."$set" = this         # Ghi đè dữ liệu mới bằng toán tử $set
-
-              # LUỒNG 2: Sửa bảng departments (thêm bác sĩ vào khoa)
-              - mongodb:
-                  collection: departments
-                  operation: update-one
-                  filter_map: |
-                    root._id = this.departmentId   # Tìm khoa theo departmentId
-                  document_map: |
-                    # $addToSet: thêm ID vào mảng, tự tránh trùng lặp
-                    root."$addToSet"."doctorIds" = this.id
+          mongodb:
+            collection: mail_logs
 ```
 
-> **Lưu ý quan trọng:** Cả 2 luồng output PHẢI thành công thì message mới được xử lý xong. Nếu 1 luồng lỗi → toàn bộ message sẽ bị retry → có thể gây tắc nghẽn pipeline (xem mục Bẫy thường gặp bên dưới).
+Điểm quan trọng:
+
+- Message từ `users` đi vào collection `users`.
+- Message từ `mail-logs` đi vào collection `mail_logs`.
+- Cả hai đều dùng `update-one` + `upsert: true` để tránh lỗi duplicate key khi message bị đọc lại.
 
 ---
 
-## ⚠️ Bẫy thường gặp (Gotchas)
+## 💻 Code Walkthrough
 
-### Bẫy 1: Dùng `insert-one` với message bị đọc lại → Tắc nghẽn toàn bộ pipeline
+### 1. Express Server
 
-**Tình huống:** Pipeline dùng `operation: insert-one` để thêm bản ghi. Message đã được insert thành công rồi. Nhưng vì lý do nào đó (restart container, consumer group reset), pipeline đọc lại message cũ → cố insert lần nữa → MongoDB báo lỗi `E11000 duplicate key` → Redpanda Connect **retry vô hạn** → **TẮC NGHẼN tất cả** (không message nào khác được xử lý nữa kể cả message ở topic hoàn toàn khác).
+File:
 
-**Giải pháp:** Dùng `operation: update-one` + `upsert: true` thay cho `insert-one`:
+```txt
+src/server.js
+```
+
+Server cấu hình Express, JSON body parser, health check và route:
+
+```javascript
+app.use(express.json());
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "redpanda-connect-backend",
+    time: new Date().toISOString(),
+  });
+});
+
+app.use("/api/publish", require("./routes/publish.routes"));
+app.use("/api/users", require("./routes/users.routes"));
+```
+
+Khi start server, producer Kafka sẽ connect trước:
+
+```javascript
+const start = async () => {
+  await connectProducer();
+  app.listen(PORT, () => {
+    console.log(`Server  : http://localhost:${PORT}`);
+  });
+};
+```
+
+Nếu Redpanda chưa chạy hoặc `KAFKA_BROKERS` sai, API có thể không start được vì producer không kết nối được.
+
+### 2. Publish Controller
+
+File:
+
+```txt
+src/controllers/publish.controller.js
+```
+
+Controller này nhận topic từ URL:
+
+```http
+POST /api/publish/:topic
+```
+
+Ví dụ:
+
+```http
+POST /api/publish/users
+```
+
+Code tạo event:
+
+```javascript
+const event = {
+  ...body,
+  id: body.id || crypto.randomUUID(),
+  eventType: body.eventType || "add",
+  eventTime: new Date().toISOString(),
+};
+```
+
+Điểm quan trọng:
+
+- JSON body được giữ lại gần như nguyên dạng.
+- Nếu body chưa có `id`, API tự tạo UUID.
+- Nếu body chưa có `eventType`, API tự set `"add"`.
+- Nếu body chưa có `eventTime`, API tự set thời gian hiện tại.
+- Event sau đó được gửi vào Redpanda bằng KafkaJS.
+
+Gửi message:
+
+```javascript
+await sendMessage(topic, event);
+```
+
+### 3. User Controller
+
+File:
+
+```txt
+src/controllers/users.controller.js
+```
+
+Controller này có 3 chức năng chính:
+
+| Hàm | API | Chức năng |
+|---|---|---|
+| `registerUser` | `POST /api/users/register` | Tạo user, gửi mail xác nhận, ghi log |
+| `confirmUser` | `GET /api/users/confirm` | Publish event xác nhận tài khoản |
+| `sendFiveConfirmationEmails` | `POST /api/users/send-five-mails` | Gửi tối đa 5 mail và ghi log từng lần |
+
+#### `registerUser`
+
+Luồng xử lý:
+
+1. Lấy `email` từ JSON body.
+2. Validate email.
+3. Tạo `userId`.
+4. Tạo token xác nhận email.
+5. Publish user event vào topic `users`.
+6. Gửi email xác nhận.
+7. Publish mail log vào topic `mail-logs`.
+
+Code tạo user event:
+
+```javascript
+const userEvent = {
+  id: userId,
+  eventType: "add",
+  eventTime: new Date().toISOString(),
+  name,
+  email,
+  status: "pending_email_confirmation",
+  emailVerified: false,
+  emailVerificationToken: token,
+};
+```
+
+Nếu gửi mail thành công, response:
+
+```json
+{
+  "success": true,
+  "message": "Tao user thanh cong. Vui long check mail de xac nhan tai khoan.",
+  "userId": "uuid",
+  "mail": {
+    "status": "success",
+    "mailId": "<provider-message-id>",
+    "logId": "uuid"
+  }
+}
+```
+
+Nếu gửi mail thất bại, user vẫn đã được publish vào Redpanda, response sẽ là `202`:
+
+```json
+{
+  "success": true,
+  "message": "User da duoc tao, nhung gui mail xac nhan that bai. Da ghi log that bai vao Redpanda.",
+  "userId": "uuid",
+  "mail": {
+    "status": "failed",
+    "mailId": "uuid",
+    "logId": "uuid",
+    "error": "..."
+  }
+}
+```
+
+#### `confirmUser`
+
+API:
+
+```http
+GET /api/users/confirm?userId=user-001&token=demo-token
+```
+
+Endpoint này publish event update vào topic `users`:
+
+```json
+{
+  "id": "user-001",
+  "eventType": "update",
+  "status": "email_confirmed",
+  "emailVerified": true,
+  "emailVerifiedAt": "2026-05-18T...",
+  "emailVerificationToken": "demo-token"
+}
+```
+
+Lưu ý: demo hiện tại chưa truy vấn MongoDB để kiểm tra token đúng/sai. Endpoint chỉ publish event xác nhận vào Redpanda.
+
+#### `sendFiveConfirmationEmails`
+
+API:
+
+```http
+POST /api/users/send-five-mails
+```
+
+Request:
+
+```json
+{
+  "userId": "user-001",
+  "name": "Nguyen Van A",
+  "email": "receiver@example.com",
+  "count": 5
+}
+```
+
+Code giới hạn số lần gửi:
+
+```javascript
+return Math.min(Math.max(Math.trunc(parsed), 1), 5);
+```
+
+Vì vậy:
+
+- `count < 1` thì thành `1`.
+- `count > 5` thì thành `5`.
+- Nếu không truyền `count`, mặc định là `5`.
+
+### 4. Mail Service
+
+File:
+
+```txt
+src/services/mail.service.js
+```
+
+Service này dùng `nodemailer` để gửi mail SMTP:
+
+```javascript
+const transporter = nodemailer.createTransport({
+  host: config.host,
+  port: config.port,
+  secure: config.secure,
+  auth: config.auth,
+});
+```
+
+Thông tin SMTP lấy từ `.env`:
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+SMTP_FROM=your-email@gmail.com
+```
+
+Link xác nhận được build từ:
+
+```env
+APP_BASE_URL=http://localhost:3001
+MAIL_CONFIRM_PATH=/api/users/confirm
+```
+
+Ví dụ link gửi trong email:
+
+```txt
+http://localhost:3001/api/users/confirm?userId=user-001&token=random-token
+```
+
+### 5. Mail Log Service
+
+File:
+
+```txt
+src/services/mail-log.service.js
+```
+
+Service này tạo event log rồi publish vào topic `mail-logs`:
+
+```javascript
+const MAIL_LOG_TOPIC = process.env.MAIL_LOG_TOPIC || "mail-logs";
+```
+
+Mỗi log đều có:
+
+| Field | Ý nghĩa |
+|---|---|
+| `id` | ID của log |
+| `mailRequestId` | ID request gửi mail |
+| `mailId` | ID mail, ưu tiên provider message id |
+| `providerMessageId` | ID do SMTP provider trả về |
+| `userId` | User liên quan |
+| `to` | Email người nhận |
+| `subject` | Tiêu đề mail |
+| `status` | `success` hoặc `failed` |
+| `error` | Chi tiết lỗi nếu gửi thất bại |
+| `sentAt` | Thời điểm gửi thành công |
+| `failedAt` | Thời điểm gửi thất bại |
+
+### 6. Redpanda Connect Pipeline
+
+File:
+
+```txt
+redpanda-connect/pipelines/00-master-pipeline.yaml
+```
+
+Pipeline đầy đủ hiện tại:
+
 ```yaml
-# ❌ NGUY HIỂM: Nếu đọc lại message cũ → lỗi duplicate key → tắc pipeline
-operation: insert-one
+input:
+  kafka:
+    addresses:
+      - redpanda:9092
+    topics:
+      - users
+      - mail-logs
+    consumer_group: simple-connect-group
+    start_from_oldest: true
 
-# ✅ AN TOÀN: Chưa có → tạo mới, có rồi → cập nhật, không bao giờ lỗi
+pipeline:
+  processors:
+    - bloblang: |
+        root = this
+        root._meta.topic = @kafka_topic
+        root._meta.processedAt = now()
+        root._meta.pipeline = "simple-redpanda-to-mongodb"
+
+output:
+  switch:
+    cases:
+      - check: 'this._meta.topic == "users"'
+        output:
+          mongodb:
+            url: mongodb://mongodb:27017
+            database: app_db
+            collection: users
+            operation: update-one
+            upsert: true
+            filter_map: |
+              root._id = this.id
+            document_map: |
+              root."$set" = this
+
+      - check: 'this._meta.topic == "mail-logs"'
+        output:
+          mongodb:
+            url: mongodb://mongodb:27017
+            database: app_db
+            collection: mail_logs
+            operation: update-one
+            upsert: true
+            filter_map: |
+              root._id = this.id
+            document_map: |
+              root."$set" = this
+```
+
+---
+
+## 🔐 Cấu Hình Môi Trường
+
+Tạo file `.env` từ `.env.example`:
+
+```env
+PORT=3001
+KAFKA_BROKERS=localhost:19092
+KAFKA_CLIENT_ID=connect-redpanda-backend
+
+USERS_TOPIC=users
+MAIL_LOG_TOPIC=mail-logs
+
+APP_BASE_URL=http://localhost:3001
+MAIL_CONFIRM_PATH=/api/users/confirm
+MAIL_CONFIRM_SUBJECT=Xac nhan tai khoan
+
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+SMTP_FROM=your-email@gmail.com
+```
+
+### Giải Thích Từng Biến
+
+| Biến | Ý nghĩa |
+|---|---|
+| `PORT` | Port chạy Express API |
+| `KAFKA_BROKERS` | Địa chỉ Redpanda/Kafka broker để Node.js publish message |
+| `KAFKA_CLIENT_ID` | Client ID của KafkaJS |
+| `USERS_TOPIC` | Topic chứa event user |
+| `MAIL_LOG_TOPIC` | Topic chứa log gửi mail |
+| `APP_BASE_URL` | Base URL để tạo link xác nhận tài khoản |
+| `MAIL_CONFIRM_PATH` | Path xác nhận tài khoản |
+| `MAIL_CONFIRM_SUBJECT` | Tiêu đề email xác nhận |
+| `SMTP_HOST` | SMTP server, Gmail là `smtp.gmail.com` |
+| `SMTP_PORT` | Port SMTP, Gmail SSL thường dùng `465` |
+| `SMTP_SECURE` | `true` nếu dùng port `465` |
+| `SMTP_USER` | Email dùng để đăng nhập SMTP |
+| `SMTP_PASS` | App password SMTP |
+| `SMTP_FROM` | Email hiển thị ở người gửi |
+
+### Lưu Ý Với Gmail SMTP
+
+Để dùng Gmail gửi mail:
+
+1. Bật 2-Step Verification cho tài khoản Google.
+2. Tạo App Password.
+3. Gán App Password vào `SMTP_PASS`.
+4. Đặt `SMTP_FROM` giống `SMTP_USER` nếu chưa cấu hình alias.
+
+Không commit file `.env` lên Git vì có mật khẩu SMTP.
+
+---
+
+## 🚀 Cách Chạy Project
+
+### 1. Cài thư viện
+
+```bash
+npm install
+```
+
+### 2. Chạy toàn bộ bằng Docker Compose
+
+Project đã có `docker-compose.yml` để chạy đủ 4 service:
+
+- `redpanda`: Kafka-compatible broker.
+- `mongodb`: database lưu dữ liệu.
+- `redpanda-connect`: đọc topic và ghi MongoDB bằng pipeline YAML.
+- `api`: Node.js Express API.
+
+Chạy tất cả:
+
+```bash
+docker compose up -d --build
+```
+
+Xem log:
+
+```bash
+docker compose logs -f
+```
+
+Xem log riêng Redpanda Connect:
+
+```bash
+docker compose logs -f redpanda-connect
+```
+
+Tắt nhưng giữ dữ liệu:
+
+```bash
+docker compose down
+```
+
+Tắt và xóa volume dữ liệu:
+
+```bash
+docker compose down -v
+```
+
+Trong Docker Compose, pipeline dùng MongoDB URL nội bộ:
+
+```yaml
+url: mongodb://mongodb:27017
+```
+
+Nếu bạn không chạy bằng Docker Compose mà chạy Redpanda Connect trực tiếp trên máy, hãy đổi URL MongoDB trong YAML thành:
+
+```yaml
+url: mongodb://localhost:27017
+```
+
+### 3. Tạo topic nếu broker không auto-create
+
+Pipeline cần 2 topic:
+
+```txt
+users
+mail-logs
+```
+
+Ví dụ với `rpk`:
+
+```bash
+rpk topic create users
+rpk topic create mail-logs
+```
+
+Nếu chạy Redpanda trong Docker:
+
+```bash
+docker exec redpanda rpk topic create users
+docker exec redpanda rpk topic create mail-logs
+```
+
+### 4. Chạy API
+
+Development:
+
+```bash
+npm run dev
+```
+
+Production:
+
+```bash
+npm start
+```
+
+Khi chạy thành công, console sẽ in:
+
+```txt
+Redpanda Connect Backend
+Server  : http://localhost:3001
+Health  : GET  /health
+Publish : POST /api/publish/:topic
+Users   : POST /api/users | POST /api/users/register
+Confirm : GET  /api/users/confirm?userId=...&token=...
+Mail x5 : POST /api/users/send-five-mails
+```
+
+---
+
+## 🧪 Test Bằng Postman
+
+Postman collection:
+
+```txt
+postman/Simple_Redpanda_Mail.postman_collection.json
+```
+
+Import file này vào Postman.
+
+Collection có 5 request:
+
+| STT | Request | Mục đích |
+|---|---|---|
+| 1 | `Health` | Kiểm tra API còn sống |
+| 2 | `Publish user event to Redpanda` | Gửi JSON vào topic `users` |
+| 3 | `Register user and send confirmation mail` | Tạo user và gửi email |
+| 4 | `Send 5 confirmation mails` | Gửi nhiều mail liên tục |
+| 5 | `Confirm user` | Publish event xác nhận user |
+
+Biến Postman:
+
+```txt
+baseUrl = http://localhost:3001
+```
+
+Nếu API chạy port khác, sửa `baseUrl`.
+
+---
+
+## 🧾 API Reference
+
+### 1. Health Check
+
+```http
+GET /health
+```
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "service": "redpanda-connect-backend",
+  "time": "2026-05-18T..."
+}
+```
+
+### 2. Publish JSON Vào Topic
+
+```http
+POST /api/publish/:topic
+Content-Type: application/json
+```
+
+Ví dụ:
+
+```http
+POST /api/publish/users
+```
+
+Body:
+
+```json
+{
+  "id": "user-001",
+  "name": "Postman User",
+  "email": "receiver@example.com",
+  "status": "from_postman"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "message": "Event da duoc gui vao topic \"users\"",
+  "topic": "users",
+  "eventId": "user-001",
+  "event": {
+    "id": "user-001",
+    "name": "Postman User",
+    "email": "receiver@example.com",
+    "status": "from_postman",
+    "eventType": "add",
+    "eventTime": "2026-05-18T..."
+  },
+  "note": "Redpanda Connect se doc topic, xu ly pipeline va luu vao MongoDB."
+}
+```
+
+### 3. Tạo User Và Gửi Mail
+
+```http
+POST /api/users/register
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "name": "Nguyen Van A",
+  "email": "receiver@example.com"
+}
+```
+
+Response khi gửi mail thành công:
+
+```json
+{
+  "success": true,
+  "message": "Tao user thanh cong. Vui long check mail de xac nhan tai khoan.",
+  "userId": "uuid",
+  "userEventId": "uuid",
+  "mail": {
+    "status": "success",
+    "mailId": "<provider-message-id>",
+    "logId": "uuid"
+  }
+}
+```
+
+Response khi user đã publish nhưng mail lỗi:
+
+```json
+{
+  "success": true,
+  "message": "User da duoc tao, nhung gui mail xac nhan that bai. Da ghi log that bai vao Redpanda.",
+  "userId": "uuid",
+  "userEventId": "uuid",
+  "mail": {
+    "status": "failed",
+    "mailId": "uuid",
+    "logId": "uuid",
+    "error": "..."
+  }
+}
+```
+
+### 4. Gửi 5 Mail Liên Tục
+
+```http
+POST /api/users/send-five-mails
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "userId": "user-001",
+  "name": "Postman User",
+  "email": "receiver@example.com",
+  "count": 5
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "message": "Da gui lien tuc 5 mail va ghi log vao Redpanda.",
+  "userId": "user-001",
+  "successCount": 5,
+  "failureCount": 0,
+  "results": [
+    {
+      "sequence": 1,
+      "status": "success",
+      "mailId": "<provider-message-id>",
+      "logId": "uuid"
+    }
+  ]
+}
+```
+
+### 5. Xác Nhận Tài Khoản
+
+```http
+GET /api/users/confirm?userId=user-001&token=demo-token
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "message": "Da nhan yeu cau xac nhan tai khoan.",
+  "userId": "user-001"
+}
+```
+
+---
+
+## 📁 Cấu Trúc Thư Mục
+
+```txt
+connect_redpanda/
+├── Dockerfile
+├── README.md
+├── package.json
+├── package-lock.json
+├── postman/
+│   └── Simple_Redpanda_Mail.postman_collection.json
+├── redpanda-connect/
+│   └── pipelines/
+│       ├── 00-master-pipeline.yaml
+│       └── operation.md
+└── src/
+    ├── server.js
+    ├── config/
+    │   └── kafka.js
+    ├── controllers/
+    │   ├── publish.controller.js
+    │   └── users.controller.js
+    ├── kafka/
+    │   ├── consumer.js
+    │   └── producer.js
+    ├── routes/
+    │   ├── publish.routes.js
+    │   └── users.routes.js
+    └── services/
+        ├── mail-log.service.js
+        └── mail.service.js
+```
+
+---
+
+## ⚠️ Lỗi Thường Gặp
+
+### 1. API không start được
+
+Nguyên nhân thường gặp:
+
+- Redpanda chưa chạy.
+- `KAFKA_BROKERS` sai.
+- Port broker không đúng.
+
+Kiểm tra `.env`:
+
+```env
+KAFKA_BROKERS=localhost:19092
+```
+
+Nếu Redpanda chạy trong Docker, hãy kiểm tra port expose ra host.
+
+### 2. Gửi mail lỗi `Missing SMTP_USER or SMTP_PASS`
+
+Nguyên nhân:
+
+- `.env` chưa có `SMTP_USER`.
+- `.env` chưa có `SMTP_PASS`.
+- Server chưa restart sau khi sửa `.env`.
+
+Cách sửa:
+
+```env
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+SMTP_FROM=your-email@gmail.com
+```
+
+### 3. Gmail báo sai mật khẩu
+
+Không dùng mật khẩu Gmail thường. Phải dùng **Google App Password**.
+
+Các bước:
+
+1. Vào Google Account.
+2. Bật 2-Step Verification.
+3. Tạo App Password.
+4. Copy app password vào `SMTP_PASS`.
+
+### 4. MongoDB không có dữ liệu
+
+Kiểm tra:
+
+- Redpanda Connect đã chạy chưa.
+- Pipeline có đọc đúng file `00-master-pipeline.yaml` không.
+- Topic `users` và `mail-logs` có message chưa.
+- MongoDB URL trong YAML đúng chưa.
+
+Nếu sửa YAML, phải restart Redpanda Connect.
+
+### 5. Dữ liệu bị ghi đè trong MongoDB
+
+Pipeline đang dùng:
+
+```yaml
 operation: update-one
 upsert: true
 filter_map: |
   root._id = this.id
-document_map: |
-  root."$set" = this
 ```
 
-### Bẫy 2: Sửa file YAML nhưng pipeline không thay đổi
+Nghĩa là nếu 2 message có cùng `id`, document trong MongoDB sẽ được update, không tạo document mới.
 
-File `00-master-pipeline.yaml` chạy bên trong Docker container. Khi bạn sửa file trên máy, container không tự biết.
+Đây là chủ ý để tránh lỗi duplicate key khi Redpanda Connect đọc lại message cũ.
 
-**Giải pháp:** Mỗi lần sửa file `.yaml` → BẮT BUỘC chạy:
-```bash
-docker-compose restart connect
-```
+### 6. Postman gửi thành công nhưng không thấy email
 
-### Bẫy 3: PUT update doctor nhưng bảng departments không xuất hiện
+Kiểm tra:
 
-`update-one` với `upsert: false` chỉ **sửa bản ghi đã tồn tại**. Nếu bảng `departments` trống (chưa POST tạo khoa nào), thì lệnh update sẽ **không làm gì cả** (matched: 0).
-
-**Giải pháp:** Luôn tạo dữ liệu phụ thuộc trước:
-```
-1. POST /api/departments  →  Tạo khoa (lấy ID khoa)
-2. POST /api/doctors      →  Tạo bác sĩ (truyền departmentId = ID khoa ở trên)
-3. PUT  /api/doctors/:id  →  Cập nhật bác sĩ → broker fan_out sửa CẢ 2 bảng
-```
+- Email người nhận trong JSON body đúng chưa.
+- Mail có vào spam không.
+- SMTP account có bị Google chặn không.
+- `SMTP_FROM` có giống `SMTP_USER` không.
 
 ---
 
-## 📁 Cấu trúc thư mục
+## 📝 Ghi Chú Kỹ Thuật
 
-```
-connect_redpanda/
-├── docker-compose.yml                # Dựng toàn bộ: Redpanda + MongoDB + Connect Pipeline
-├── package.json                      # Cấu hình Node.js
-│
-├── redpanda-connect/
-│   └── pipelines/
-│       └── 00-master-pipeline.yaml   # ★ File cấu hình luồng xử lý chính (INPUT → PIPELINE → OUTPUT)
-│
-├── src/
-│   ├── server.js                     # Entry point: khởi tạo Express, đăng ký route
-│   ├── config/kafka.js               # Cấu hình kết nối tới Redpanda broker
-│   ├── kafka/producer.js             # Hàm sendMessage(topic, event) gửi vào Kafka
-│   ├── controllers/
-│   │   ├── crud.controller.js        # Controller cho users/orders/payments (3 topic trong 1 file)
-│   │   ├── doctors.controller.js     # Controller cho doctors (topic: doctor-events)
-│   │   ├── departments.controller.js # Controller cho departments (topic: department-events)
-│   │   └── appointment.controller.js # Controller cho appointments (topic: appointment-events)
-│   └── routes/
-│       ├── users.routes.js           # POST/PUT/DELETE /api/users
-│       ├── orders.routes.js          # POST/PUT/DELETE /api/orders
-│       ├── payments.routes.js        # POST/PUT/DELETE /api/payments
-│       ├── doctors.routes.js         # POST/PUT/DELETE /api/doctors
-│       ├── departments.routes.js     # POST/PUT/DELETE /api/departments
-│       ├── appointment.routes.js     # POST /api/appointments
-│       └── publish.routes.js         # POST /api/publish/:topic (dynamic)
-│
-└── postman/
-    └── Redpanda_Connect_MongoDB.postman_collection.json  # File import Postman có sẵn để test
-```
+- File `.env` chứa mật khẩu SMTP, không commit lên Git.
+- Email người nhận được lấy từ JSON body, không lấy từ `.env`.
+- `.env` chỉ chứa email gửi đi và SMTP app password.
+- Project hiện tại chỉ còn 2 nhóm API: `publish` và `users`.
+- Pipeline hiện tại chỉ xử lý `users` và `mail-logs`.
+- Các script `produce` và `test:all` trong `package.json` đang trỏ tới thư mục `scripts`, nhưng thư mục `scripts` hiện không còn trong project.
+- Nếu muốn mở rộng thêm `orders`, `payments`, `doctors`, chỉ cần thêm topic vào pipeline và thêm route/controller tương ứng.
 
 ---
 
-## 🚀 Cách chạy & Khắc phục lỗi
+## ✅ Tóm Tắt
 
-### 1. Cài đặt và khởi chạy
+Project này minh họa một luồng event-driven đơn giản nhưng thực tế:
 
-```bash
-# 1. Cài thư viện Node.js
-npm install
-
-# 2. Khởi động hệ thống nền tảng (Kafka, DB, Pipeline) bằng Docker
-docker-compose up -d
-
-# 3. Khởi chạy API server Node.js
-npm run dev
+```txt
+Client gửi JSON
+  -> Node.js publish event
+  -> Redpanda lưu event
+  -> Redpanda Connect xử lý event
+  -> MongoDB lưu dữ liệu
 ```
 
-### 2. Xem log pipeline (debug)
+Với chức năng email:
 
-```bash
-# Xem 50 dòng log gần nhất của container connect
-docker logs connect --tail 50
-
-# Theo dõi log realtime (Ctrl+C để dừng)
-docker logs connect -f
+```txt
+Tạo user
+  -> Gửi mail xác nhận
+  -> Ghi log gửi mail
+  -> Lưu user và mail log vào MongoDB qua Redpanda Connect
 ```
 
-### 3. Cách test bằng Postman
-
-1. Mở Postman → Import → chọn file `postman/Redpanda_Connect_MongoDB.postman_collection.json`.
-2. Tạo khoa trước: Folder **9. CRUD - Departments** → POST → Copy `id` từ response.
-3. Tạo bác sĩ: Folder **8. CRUD - Doctors** → POST → Dán `departmentId` = id khoa vừa tạo.
-4. Cập nhật bác sĩ: PUT → Mở MongoDB UI → Kiểm tra cả bảng `doctors` lẫn `departments` đều thay đổi!
-
----
-
-*Được xây dựng với: Node.js + KafkaJS + Redpanda Connect + MongoDB*
+*Được xây dựng với Node.js, KafkaJS, Redpanda, Redpanda Connect, MongoDB và Nodemailer.*

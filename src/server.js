@@ -1,17 +1,12 @@
-// ============================================================
-// server.js - Entry point hoàn chỉnh
-// Hỗ trợ dynamic topic, database, collection qua API
-// ============================================================
 require("dotenv").config();
 const express = require("express");
 const { connectProducer } = require("./kafka/producer");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 app.use(express.json());
 
-// ── Health check ──────────────────────────────────────────
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -20,42 +15,39 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ── Routes ────────────────────────────────────────────────
-// Dynamic: POST /api/publish/:topic
 app.use("/api/publish", require("./routes/publish.routes"));
+app.use("/api/users", require("./routes/users.routes"));
 
-// CRUD routes - mỗi domain dùng route file riêng
-app.use("/api/users",    require("./routes/users.routes"));
-app.use("/api/orders",   require("./routes/orders.routes"));
-app.use("/api/payments", require("./routes/payments.routes"));
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: "Route not found",
+  });
+});
 
-// Legacy appointment route
-app.use("/api/appointments", require("./routes/appointment.routes"));
+app.use((err, req, res, next) => {
+  console.error("[Server] Unhandled error:", err);
+  res.status(500).json({
+    success: false,
+    error: "Internal server error",
+    detail: err.message,
+  });
+});
 
-// Doctor & Department routes (ví dụ update đồng thời 2 bảng)
-app.use("/api/doctors", require("./routes/doctors.routes"));
-app.use("/api/departments", require("./routes/departments.routes"));
-
-// ── Start ─────────────────────────────────────────────────
 const start = async () => {
   await connectProducer();
   app.listen(PORT, () => {
-    console.log("╔══════════════════════════════════════════════════╗");
-    console.log("║         Redpanda Connect Backend                 ║");
-    console.log("╠══════════════════════════════════════════════════╣");
-    console.log(`║  Server      : http://localhost:${PORT}              ║`);
-    console.log(`║  Health      : GET  /health                      ║`);
-    console.log(`║  Publish     : POST /api/publish/:topic          ║`);
-    console.log(`║  Users       : POST /api/users                   ║`);
-    console.log(`║  Orders      : POST /api/orders                  ║`);
-    console.log(`║  Payments    : POST /api/payments                ║`);
-    console.log(`║  Doctors     : /api/doctors  (CRUD + multi-table)║`);
-    console.log(`║  Departments : /api/departments (CRUD)           ║`);
-    console.log("╚══════════════════════════════════════════════════╝");
+    console.log("Redpanda Connect Backend");
+    console.log(`Server  : http://localhost:${PORT}`);
+    console.log("Health  : GET  /health");
+    console.log("Publish : POST /api/publish/:topic");
+    console.log("Users   : POST /api/users | POST /api/users/register");
+    console.log("Confirm : GET  /api/users/confirm?userId=...&token=...");
+    console.log("Mail x5 : POST /api/users/send-five-mails");
   });
 };
 
 start().catch((err) => {
-  console.error("[Server] Không thể khởi động:", err);
+  console.error("[Server] Khong the khoi dong:", err);
   process.exit(1);
 });

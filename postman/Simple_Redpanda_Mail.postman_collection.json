@@ -1,0 +1,140 @@
+{
+  "info": {
+    "name": "Simple Redpanda Mail Flow",
+    "description": "Postman -> Node API -> Redpanda -> Redpanda Connect -> MongoDB",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health"
+          ]
+        }
+      }
+    },
+    {
+      "name": "2. Publish user event to Redpanda",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id\": \"postman-user-001\",\n  \"name\": \"Postman User\",\n  \"email\": \"receiver@example.com\",\n  \"status\": \"from_postman\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/publish/users",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "publish",
+            "users"
+          ]
+        }
+      }
+    },
+    {
+      "name": "3. Register user and send confirmation mail",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Nguyen Van A\",\n  \"email\": \"receiver@example.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/users/register",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "users",
+            "register"
+          ]
+        }
+      }
+    },
+    {
+      "name": "4. Send 5 confirmation mails",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"userId\": \"postman-user-001\",\n  \"name\": \"Postman User\",\n  \"email\": \"receiver@example.com\",\n  \"count\": 5\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/users/send-five-mails",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "users",
+            "send-five-mails"
+          ]
+        }
+      }
+    },
+    {
+      "name": "5. Confirm user",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/users/confirm?userId=postman-user-001&token=demo-token",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "users",
+            "confirm"
+          ],
+          "query": [
+            {
+              "key": "userId",
+              "value": "postman-user-001"
+            },
+            {
+              "key": "token",
+              "value": "demo-token"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3001"
+    }
+  ]
+}

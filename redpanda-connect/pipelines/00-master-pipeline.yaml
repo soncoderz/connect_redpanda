@@ -1,319 +1,49 @@
-# ============================================================
-# PIPELINE MASTER: Pipeline tổng hợp mạnh mẽ nhất
-# Chịu trách nhiệm nhận mọi sự kiện từ Kafka và rẽ nhánh thông minh
-# ============================================================
+# Simple flow:
+# Postman -> Node API -> Redpanda topic -> Redpanda Connect -> MongoDB
 
 input:
-  # Khối nhận dữ liệu đầu vào
   kafka:
     addresses:
-      - redpanda:9092 # Địa chỉ Kafka broker
+      - redpanda:9092
     topics:
-      # Lắng nghe đồng thời 7 topic khác nhau
       - users
-      - orders
-      - payments
-      - crud-events
-      - appointment-events
-      - doctor-events        # MỚI: Topic cho bác sĩ
-      - department-events    # MỚI: Topic cho khoa/phòng ban
-    consumer_group: connect-master-group # Tên nhóm tiêu thụ
-    start_from_oldest: true # Đọc từ đầu nếu chưa có lịch sử đọc
+      - mail-logs
+    consumer_group: simple-connect-group
+    start_from_oldest: true
 
 pipeline:
-  threads: 4 # Xử lý đa luồng (4 luồng song song) để tối đa tốc độ
   processors:
-    # BƯỚC 1: Kiểm tra tính hợp lệ (Validate) bằng ngôn ngữ Bloblang
     - bloblang: |
-        # Khai báo biến kiểm tra: tin nhắn phải có 'id' hoặc '_id'
-        let hasId    = this.id != null || this._id != null
-        # Biến kiểm tra: tin nhắn phải có 'eventType' và không được rỗng
-        let hasEvent = this.eventType != null && this.eventType != ""
-        
-        # 'root = this' nghĩa là giữ nguyên dữ liệu tin nhắn gốc
         root = this
-        
-        # Thêm các trường metadata (siêu dữ liệu) ẩn (bắt đầu bằng _)
-        # Trường này dùng để đánh dấu xem tin nhắn có hợp lệ không (true/false)
-        root._meta.valid   = $hasId && $hasEvent
-        # Lưu lại tên topic xuất phát của tin nhắn này
-        root._meta.topic   = @kafka_topic
-        # Lưu lại thời gian xử lý
-        root._meta.savedAt = now()
-        root._meta.source  = "redpanda-connect-master"
-
-    # BƯỚC 2: Loại bỏ tin nhắn lỗi
-    - bloblang: |
-        # Nếu tin nhắn hợp lệ (_meta.valid == true) thì giữ lại (root = this)
-        root = if this._meta.valid {
-          this
-        } else {
-          # Nếu không hợp lệ, gọi hàm deleted() để loại bỏ tin nhắn này khỏi luồng
-          deleted()
-        }
-
-    # BƯỚC 3: Bổ sung thêm thông tin định danh pipeline
-    - mapping: |
-        root = this
-        root._meta.pipeline = "master-v1"
+        root._meta.topic = @kafka_topic
+        root._meta.processedAt = now()
+        root._meta.pipeline = "simple-redpanda-to-mongodb"
 
 output:
-  # Khối xuất dữ liệu ra ngoài
-  # Switch: rẽ nhánh dữ liệu dựa vào điều kiện (giống lệnh switch/case trong lập trình)
   switch:
     cases:
-      # TRƯỜNG HỢP 1: CRUD - Thêm mới (Insert)
-      # Nếu đến từ topic 'crud-events' VÀ có thao tác là 'add'
-      # Dùng upsert thay vì insert-one để tránh lỗi duplicate key khi đọc lại message cũ
-      - check: 'this._meta.topic == "crud-events" && this.eventType == "add"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: resources
-            operation: update-one
-            upsert: true # Nếu chưa có → tạo mới, nếu có rồi → cập nhật (không bao giờ lỗi duplicate)
-            filter_map: |
-              root._id = this.id
-            document_map: |
-              root."$set" = this
-
-      # TRƯỜNG HỢP 2: CRUD - Cập nhật (Update)
-      # Nếu đến từ topic 'crud-events' VÀ có thao tác là 'update'
-      - check: 'this._meta.topic == "crud-events" && this.eventType == "update"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: resources
-            operation: update-one # Lệnh cập nhật 1 tài liệu có sẵn
-            upsert: false # Nếu không tìm thấy thì KHÔNG tạo mới
-            filter_map: |
-              # Điều kiện để tìm ra tài liệu cần update: _id trong DB phải bằng id gửi lên
-              root._id = this.id
-            document_map: |
-              # Sử dụng toán tử $set của MongoDB để cập nhật các trường mới
-              root."$set" = this
-
-      # TRƯỜNG HỢP 3: CRUD - Xóa (Delete)
-      # Nếu đến từ topic 'crud-events' VÀ có thao tác là 'delete'
-      - check: 'this._meta.topic == "crud-events" && this.eventType == "delete"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: resources
-            operation: delete-one # Lệnh xóa 1 tài liệu
-            filter_map: |
-              # Điều kiện xóa: _id trong DB phải bằng id gửi lên
-              root._id = this.id
-      
-      
-
-      # TRƯỜNG HỢP 4: Định tuyến dữ liệu của topic 'users'
-      # Nếu tin nhắn xuất phát từ topic 'users'
       - check: 'this._meta.topic == "users"'
         output:
           mongodb:
             url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: users # Lưu thẳng vào bảng 'users'
-            operation: insert-one
-            document_map: |
-              root = this
-
-      # TRƯỜNG HỢP 5: Định tuyến dữ liệu của topic 'orders'
-      - check: 'this._meta.topic == "orders"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: orders # Lưu thẳng vào bảng 'orders'
-            operation: insert-one
-            document_map: |
-              root = this
-
-      # TRƯỜNG HỢP 6: Định tuyến dữ liệu của topic 'payments'
-      - check: 'this._meta.topic == "payments"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: payments # Lưu thẳng vào bảng 'payments'
-            operation: insert-one
-            document_map: |
-              root = this
-
-      # TRƯỜNG HỢP MẶC ĐỊNH (Fallback)
-      # Nếu tin nhắn không khớp với bất kỳ điều kiện (check) nào ở trên (Ví dụ: topic appointment-events)
-      # - output:
-      #     mongodb:
-      #       url: mongodb://host.docker.internal:27017
-      #       database: app_db
-      #       collection: unrouted_events # Bị đẩy vào bảng chứa các sự kiện chưa phân loại
-      #       operation: insert-one
-      #       document_map: |
-      #         root = this
-      
-      # APPOINTMENT - Thêm lịch hẹn
-      - check: 'this._meta.topic == "appointment-events" && this.eventType == "add"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: appointments
-            operation: insert-one
-            document_map: |
-              root = this
-              root._id = this.id
-
-      # APPOINTMENT - Sửa lịch hẹn
-      - check: 'this._meta.topic == "appointment-events" && this.eventType == "update"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: appointments
+            database: app
+            collection: users
             operation: update-one
-            upsert: false
+            upsert: true
             filter_map: |
               root._id = this.id
             document_map: |
               root."$set" = this
 
-      # APPOINTMENT - Xóa lịch hẹn
-      - check: 'this._meta.topic == "appointment-events" && this.eventType == "delete"'
+      - check: 'this._meta.topic == "mail-logs"'
         output:
           mongodb:
             url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: appointments
-            operation: delete-one
-            filter_map: |
-              root._id = this.id
-
-      # ============================================================
-      # DOCTOR - Thêm bác sĩ mới
-      # ============================================================
-      - check: 'this._meta.topic == "doctor-events" && this.eventType == "add"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: doctors
-            operation: insert-one
-            document_map: |
-              root = this
-              root._id = this.id
-
-      # ============================================================
-      # DOCTOR - Cập nhật bác sĩ (★ SỬA ĐỒNG THỜI 2 BẢNG ★)
-      # Khi bác sĩ được chuyển khoa, pipeline sẽ:
-      #   1. Cập nhật thông tin mới trong bảng "doctors"
-      #   2. Thêm ID bác sĩ vào mảng doctorIds trong bảng "departments"
-      # Cả 2 thao tác diễn ra song song nhờ broker pattern: fan_out
-      # ============================================================
-      - check: 'this._meta.topic == "doctor-events" && this.eventType == "update"'
-        output:
-          broker:
-            pattern: fan_out # Nhân bản 1 tin nhắn ra cho TẤT CẢ outputs bên dưới
-            outputs:
-              # OUTPUT 1: Cập nhật bảng doctors
-              - mongodb:
-                  url: mongodb://host.docker.internal:27017
-                  database: app_db
-                  collection: doctors
-                  operation: update-one
-                  upsert: false
-                  filter_map: |
-                    root._id = this.id
-                  document_map: |
-                    root."$set" = this
-
-              # OUTPUT 2: Cập nhật bảng departments (thêm bác sĩ vào danh sách khoa)
-              - mongodb:
-                  url: mongodb://host.docker.internal:27017
-                  database: app_db
-                  collection: departments
-                  operation: update-one
-                  upsert: false
-                  filter_map: |
-                    # Tìm khoa theo departmentId mà bác sĩ được chuyển đến
-                    root._id = this.departmentId
-                  document_map: |
-                    # $addToSet: thêm phần tử vào mảng, tự động tránh trùng lặp
-                    root."$addToSet"."doctorIds" = this.id
-
-      # ============================================================
-      # DOCTOR - Xóa bác sĩ (★ CŨNG SỬA 2 BẢNG ★)
-      # Xóa khỏi bảng doctors + gỡ ID ra khỏi bảng departments
-      # ============================================================
-      - check: 'this._meta.topic == "doctor-events" && this.eventType == "delete"'
-        output:
-          broker:
-            pattern: fan_out
-            outputs:
-              # OUTPUT 1: Xóa bác sĩ khỏi bảng doctors
-              - mongodb:
-                  url: mongodb://host.docker.internal:27017
-                  database: app_db
-                  collection: doctors
-                  operation: delete-one
-                  filter_map: |
-                    root._id = this.id
-
-              # OUTPUT 2: Gỡ ID bác sĩ ra khỏi bảng departments
-              - mongodb:
-                  url: mongodb://host.docker.internal:27017
-                  database: app_db
-                  collection: departments
-                  operation: update-one
-                  upsert: false
-                  filter_map: |
-                    root._id = this.departmentId
-                  document_map: |
-                    # $pull: gỡ phần tử ra khỏi mảng
-                    root."$pull"."doctorIds" = this.id
-
-      # ============================================================
-      # DEPARTMENT - Thêm khoa mới
-      # ============================================================
-      - check: 'this._meta.topic == "department-events" && this.eventType == "add"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: departments
-            operation: insert-one
-            document_map: |
-              root = this
-              root._id = this.id
-
-      # ============================================================
-      # DEPARTMENT - Cập nhật khoa
-      # ============================================================
-      - check: 'this._meta.topic == "department-events" && this.eventType == "update"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: departments
+            database: app
+            collection: mail_logs
             operation: update-one
-            upsert: false
+            upsert: true
             filter_map: |
               root._id = this.id
             document_map: |
               root."$set" = this
-
-      # ============================================================
-      # DEPARTMENT - Xóa khoa
-      # ============================================================
-      - check: 'this._meta.topic == "department-events" && this.eventType == "delete"'
-        output:
-          mongodb:
-            url: mongodb://host.docker.internal:27017
-            database: app_db
-            collection: departments
-            operation: delete-one
-            filter_map: |
-              root._id = this.id
