@@ -25,6 +25,16 @@ services:
       retries: 12
       start_period: 20s
 
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    container_name: redpanda-console
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    depends_on:
+      redpanda:
+        condition: service_healthy
 
   redpanda-init:
     image: docker.redpanda.com/redpandadata/redpanda:latest
@@ -35,6 +45,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: >
       "rpk topic create users -X brokers=redpanda:9092 || true;
+       rpk topic create send-mail -X brokers=redpanda:9092 || true;
        rpk topic create mail-logs -X brokers=redpanda:9092 || true"
 
   redpanda-connect:
@@ -49,6 +60,15 @@ services:
     volumes:
       - ./redpanda-connect/pipelines/00-master-pipeline.yaml:/connect.yaml:ro
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
 
 volumes:
   redpanda-data:
+  redis-data:

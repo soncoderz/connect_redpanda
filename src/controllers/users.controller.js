@@ -1,9 +1,8 @@
 const crypto = require("crypto");
 const { sendMessage } = require("../kafka/producer");
-const { sendConfirmationEmail } = require("../services/mail.service");
-const { publishMailLog } = require("../services/mail-log.service");
 
 const USERS_TOPIC = process.env.USERS_TOPIC || "users";
+const SEND_MAIL_TOPIC = process.env.SEND_MAIL_TOPIC || "send-mail";
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const sanitizeUserPayload = (body) => {
@@ -39,41 +38,6 @@ const createUserEvent = ({ body, userId, email, name, token }) => {
   };
 };
 
-const logMailResult = async ({
-  mailRequestId,
-  userId,
-  email,
-  subject,
-  sequence,
-  count,
-  info,
-  error,
-  metadata,
-}) => {
-  const status = info ? "success" : "failed";
-
-  return publishMailLog({
-    mailRequestId,
-    providerMessageId: info?.providerMessageId,
-    userId,
-    to: email,
-    subject,
-    status,
-    sequence,
-    count,
-    smtp: info
-      ? {
-          accepted: info.accepted,
-          rejected: info.rejected,
-          response: info.response,
-          envelope: info.envelope,
-        }
-      : null,
-    error,
-    metadata,
-  });
-};
-
 const registerUser = async (req, res) => {
   const body = req.body || {};
   const email = String(body.email || "").trim().toLowerCase();
@@ -92,6 +56,7 @@ const registerUser = async (req, res) => {
   const subject = process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";
   const userEvent = createUserEvent({ body, userId, email, name, token });
 
+  // 1. Gửi user event lên Redpanda
   try {
     await sendMessage(USERS_TOPIC, userEvent);
   } catch (err) {
@@ -103,59 +68,37 @@ const registerUser = async (req, res) => {
     });
   }
 
+  // 2. Đẩy event send-mail lên Redpanda (BullMQ worker sẽ xử lý ngầm)
   try {
-    const info = await sendConfirmationEmail({
-      to: email,
-      name,
+    const sendMailEvent = {
+      id: mailRequestId,
+      eventType: "send_confirmation",
       userId,
+      email,
+      name,
       token,
       subject,
-    });
-    const logEvent = await logMailResult({
-      mailRequestId,
-      userId,
-      email,
-      subject: info.subject,
-      info,
-      metadata: { source: "register_user" },
-    });
+      eventTime: new Date().toISOString(),
+    };
 
-    return res.status(201).json({
-      success: true,
-      message: "Tao user thanh cong. Vui long check mail de xac nhan tai khoan.",
-      userId,
-      userEventId: userEvent.id,
-      mail: {
-        status: "success",
-        mailId: logEvent.mailId,
-        logId: logEvent.id,
-      },
-    });
+    await sendMessage(SEND_MAIL_TOPIC, sendMailEvent);
   } catch (err) {
-    console.error("[Users] Gui mail xac nhan that bai:", err.message);
-
-    const logEvent = await logMailResult({
-      mailRequestId,
-      userId,
-      email,
-      subject,
-      error: err,
-      metadata: { source: "register_user" },
-    });
-
+    console.error("[Users] Khong the gui send-mail event:", err.message);
     return res.status(202).json({
       success: true,
-      message: "User da duoc tao, nhung gui mail xac nhan that bai. Da ghi log that bai vao Redpanda.",
+      message: "User da duoc tao, nhung khong the day event gui mail vao Redpanda.",
       userId,
-      userEventId: userEvent.id,
-      mail: {
-        status: "failed",
-        mailId: logEvent.mailId,
-        logId: logEvent.id,
-        error: err.message,
-      },
+      mailError: err.message,
     });
   }
+
+  // 3. Trả response ngay, không chờ gửi mail
+  return res.status(201).json({
+    success: true,
+    message: "Tao user thanh cong. Mail xac nhan dang duoc xu ly ngam.",
+    userId,
+    mailRequestId,
+  });
 };
 
 const confirmUser = async (req, res) => {
@@ -204,68 +147,45 @@ const sendFiveConfirmationEmails = async (req, res) => {
     });
   }
 
+  // Đẩy nhiều event send-mail lên Redpanda (BullMQ worker sẽ xử lý ngầm)
   for (let index = 1; index <= count; index += 1) {
     const token = crypto.randomBytes(32).toString("hex");
     const mailRequestId = crypto.randomUUID();
 
     try {
-      const info = await sendConfirmationEmail({
-        to: email,
-        name,
+      const sendMailEvent = {
+        id: mailRequestId,
+        eventType: "send_confirmation",
         userId,
+        email,
+        name,
         token,
         subject,
         sequence: index,
         count,
-      });
-      const logEvent = await logMailResult({
-        mailRequestId,
-        userId,
-        email,
-        subject: info.subject,
-        sequence: index,
-        count,
-        info,
-        metadata: { source: "send_five_confirmation_emails" },
-      });
+        eventTime: new Date().toISOString(),
+      };
+
+      await sendMessage(SEND_MAIL_TOPIC, sendMailEvent);
 
       results.push({
         sequence: index,
-        status: "success",
-        mailId: logEvent.mailId,
-        logId: logEvent.id,
+        status: "queued",
+        mailRequestId,
       });
     } catch (err) {
-      const logEvent = await logMailResult({
-        mailRequestId,
-        userId,
-        email,
-        subject,
-        sequence: index,
-        count,
-        error: err,
-        metadata: { source: "send_five_confirmation_emails" },
-      });
-
       results.push({
         sequence: index,
-        status: "failed",
-        mailId: logEvent.mailId,
-        logId: logEvent.id,
+        status: "queue_failed",
         error: err.message,
       });
     }
   }
 
-  const successCount = results.filter((item) => item.status === "success").length;
-  const failureCount = results.length - successCount;
-
   return res.json({
-    success: failureCount === 0,
-    message: `Da gui lien tuc ${count} mail va ghi log vao Redpanda.`,
+    success: true,
+    message: `Da day ${count} event gui mail vao Redpanda. BullMQ dang xu ly ngam.`,
     userId,
-    successCount,
-    failureCount,
     results,
   });
 };
