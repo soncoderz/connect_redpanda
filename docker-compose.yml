@@ -58,7 +58,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./redpanda-connect/pipelines/00-master-pipeline.yaml:/connect.yaml:ro
+      - ./redpanda-connect/pipelines/01-master-pipeline.yaml:/connect.yaml:ro
 
 
 volumes:

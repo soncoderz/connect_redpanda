@@ -18,6 +18,11 @@
 | `earliest`  | Message cũ nhất còn trong topic     | Import/backfill dữ liệu cũ           |
 | `latest`    | Message mới sau lúc consumer chạy   | Chỉ xử lý dữ liệu mới                |
 | `committed` | Offset đã commit của consumer group | Muốn đọc tiếp chính xác từ offset cũ |
+ start_from_oldest:
+  true: Đọc lại từ đầu nếu chưa có offset
+  false: Chỉ xử lý message mới sau khi consumer start
+
+
 
 
 

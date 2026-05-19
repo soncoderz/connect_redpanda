@@ -7,7 +7,6 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "produce": "node scripts/test-produce.js",
-    "consume": "node src/kafka/consumer.js",
     "test:all": "node scripts/test-all.js"
   },
   "dependencies": {

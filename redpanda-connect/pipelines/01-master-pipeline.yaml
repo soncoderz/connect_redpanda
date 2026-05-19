@@ -1,0 +1,74 @@
+# ============================================================
+# Flow tổng quát:
+# Postman -> Node API -> Redpanda topic -> Redpanda Connect -> PostgreSQL
+# ============================================================
+
+# INPUT: Redpanda Connect lắng nghe 2 topic từ Redpanda (Kafka)
+input:
+  kafka:
+    addresses:
+      - redpanda:9092        # Địa chỉ broker Redpanda bên trong Docker network
+    topics:
+      - users                # Topic chứa event tạo/cập nhật user
+      - mail-logs            # Topic chứa kết quả gửi mail (thành công / thất bại)
+    consumer_group: simple-connect-group  # Tên nhóm consumer (để Redpanda biết đã đọc đến đâu)
+    start_from_oldest: true              # Đọc lại từ đầu nếu chưa có offset
+
+# PIPELINE: Xử lý trung gian trước khi ghi vào database
+pipeline:
+  processors:
+    - bloblang: |
+        root = this                              # Giữ nguyên toàn bộ dữ liệu gốc
+        root._meta.topic = @kafka_topic          # Gắn thêm tên topic vào dữ liệu (để switch bên dưới biết đường đi)
+        root._meta.processedAt = now()           # Ghi lại thời điểm Redpanda Connect xử lý
+        root._meta.pipeline = "simple-redpanda-to-postgres"  # Ghi nhãn pipeline (tiện debug)
+
+# OUTPUT: Phân luồng dữ liệu vào đúng bảng PostgreSQL tương ứng
+output:
+  switch:
+    cases:
+
+      # --- CASE 1: Dữ liệu từ topic "users" → ghi vào bảng users ---
+      - check: 'this._meta.topic == "users"'
+        output:
+          sql_raw:
+            driver: postgres
+            # Chuỗi kết nối: postgres://<user>:<password>@<host>:<port>/<database>?sslmode=disable
+            dsn: postgres://postgres:123456@host.docker.internal:5432/app?sslmode=disable
+            query: |
+              INSERT INTO users (id, name, email, status)
+              VALUES ($1, $2, $3, $4)
+              ON CONFLICT (id) DO UPDATE
+                -- COALESCE: nếu giá trị mới là NULL (event confirm không có name/email)
+                -- thì giữ nguyên giá trị cũ đang có trong bảng
+                SET name   = COALESCE(EXCLUDED.name,   users.name),
+                    email  = COALESCE(EXCLUDED.email,  users.email),
+                    status = COALESCE(EXCLUDED.status, users.status);
+            args_mapping: |
+              root = [
+                this.id,      # $1 -> cột id
+                this.name,    # $2 -> cột name  (NULL nếu là event confirm)
+                this.email,   # $3 -> cột email (NULL nếu là event confirm)
+                this.status   # $4 -> cột status
+              ]
+
+      # --- CASE 2: Dữ liệu từ topic "mail-logs" → ghi vào bảng mail_logs ---
+      - check: 'this._meta.topic == "mail-logs"'
+        output:
+          sql_raw:
+            driver: postgres
+            dsn: postgres://postgres:123456@host.docker.internal:5432/app?sslmode=disable
+            query: |
+              INSERT INTO mail_logs (id, mail_request_id, email, status, error)
+              VALUES ($1, $2, $3, $4, $5)
+              -- Nếu id đã tồn tại (event trùng lặp), bỏ qua, không báo lỗi
+              ON CONFLICT (id) DO NOTHING;
+            # args_mapping: lấy giá trị từ JSON event, truyền vào $1..$5 theo thứ tự
+            args_mapping: |
+              root = [
+                this.id,                     # $1 -> cột id
+                this.mailRequestId,          # $2 -> cột mail_request_id
+                this.to,                     # $3 -> cột email (địa chỉ người nhận)
+                this.status,                 # $4 -> cột status ("success" hoặc "failed")
+                this.error.message | ""      # $5 -> cột error (nếu không có lỗi thì để rỗng "")
+              ]
