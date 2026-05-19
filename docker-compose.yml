@@ -60,15 +60,6 @@ services:
     volumes:
       - ./redpanda-connect/pipelines/00-master-pipeline.yaml:/connect.yaml:ro
 
-  redis:
-    image: redis:7-alpine
-    container_name: redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-
 
 volumes:
   redpanda-data:
-  redis-data:

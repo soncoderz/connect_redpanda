@@ -125,61 +125,61 @@ const confirmUser = async (req, res) => {
   });
 };
 
-const sendFiveConfirmationEmails = async (req, res) => {
-  const body = req.body || {};
-  const email = String(body.email || body.to || "").trim().toLowerCase();
-  const name = body.name || body.fullName || body.username || email;
-  const userId = body.userId || body.id || crypto.randomUUID();
-  const count = parseMailCount(body.count);
-  const subject = body.subject || process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";
-  const results = [];
+// const sendFiveConfirmationEmails = async (req, res) => {
+//   const body = req.body || {};
+//   const email = String(body.email || body.to || "").trim().toLowerCase();
+//   const name = body.name || body.fullName || body.username || email;
+//   const userId = body.userId || body.id || crypto.randomUUID();
+//   const count = parseMailCount(body.count);
+//   const subject = body.subject || process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";
+//   const results = [];
 
 
-  // Đẩy nhiều event send-mail lên Redpanda (BullMQ worker sẽ xử lý ngầm)
-  for (let index = 1; index <= count; index += 1) {
-    const token = crypto.randomBytes(32).toString("hex");
-    const mailRequestId = crypto.randomUUID();
+//   // Đẩy nhiều event send-mail lên Redpanda (BullMQ worker sẽ xử lý ngầm)
+//   for (let index = 1; index <= count; index += 1) {
+//     const token = crypto.randomBytes(32).toString("hex");
+//     const mailRequestId = crypto.randomUUID();
 
-    try {
-      const sendMailEvent = {
-        id: mailRequestId,
-        eventType: "send_confirmation",
-        userId,
-        email,
-        name,
-        token,
-        subject,
-        sequence: index,
-        count,
-        eventTime: new Date().toISOString(),
-      };
+//     try {
+//       const sendMailEvent = {
+//         id: mailRequestId,
+//         eventType: "send_confirmation",
+//         userId,
+//         email,
+//         name,
+//         token,
+//         subject,
+//         sequence: index,
+//         count,
+//         eventTime: new Date().toISOString(),
+//       };
 
-      await sendMessage(SEND_MAIL_TOPIC, sendMailEvent);
+//       await sendMessage(SEND_MAIL_TOPIC, sendMailEvent);
 
-      results.push({
-        sequence: index,
-        status: "queued",
-        mailRequestId,
-      });
-    } catch (err) {
-      results.push({
-        sequence: index,
-        status: "queue_failed",
-        error: err.message,
-      });
-    }
-  }
+//       results.push({
+//         sequence: index,
+//         status: "queued",
+//         mailRequestId,
+//       });
+//     } catch (err) {
+//       results.push({
+//         sequence: index,
+//         status: "queue_failed",
+//         error: err.message,
+//       });
+//     }
+//   }
 
-  return res.json({
-    success: true,
-    message: `Da day ${count} event gui mail vao Redpanda. BullMQ dang xu ly ngam.`,
-    userId,
-    results,
-  });
-};
+//   return res.json({
+//     success: true,
+//     message: `Da day ${count} event gui mail vao Redpanda. BullMQ dang xu ly ngam.`,
+//     userId,
+//     results,
+//   });
+// };
 
 module.exports = {
   confirmUser,
   registerUser,
-  sendFiveConfirmationEmails,
+  // sendFiveConfirmationEmails,
 };

@@ -8,16 +8,11 @@
     "start": "node src/server.js",
     "produce": "node scripts/test-produce.js",
     "consume": "node src/kafka/consumer.js",
-    "worker": "node src/worker.js",
     "test:all": "node scripts/test-all.js"
   },
   "dependencies": {
-    "@bull-board/api": "^7.1.5",
-    "@bull-board/express": "^7.1.5",
-    "bullmq": "^5.76.10",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "ioredis": "^5.10.1",
     "kafkajs": "^2.2.4",
     "nodemailer": "^8.0.7"
   },
