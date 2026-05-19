@@ -10,7 +10,6 @@ const sanitizeUserPayload = (body) => {
   return safeBody;
 };
 
-const validateEmail = (email) => typeof email === "string" && EMAIL_PATTERN.test(email.trim());
 
 const parseMailCount = (value) => {
   const parsed = Number(value || 5);
@@ -43,12 +42,7 @@ const registerUser = async (req, res) => {
   const email = String(body.email || "").trim().toLowerCase();
   const name = body.name || body.fullName || body.username || email;
 
-  if (!validateEmail(email)) {
-    return res.status(400).json({
-      success: false,
-      error: "Email khong hop le",
-    });
-  }
+ 
 
   const userId = body.id || crypto.randomUUID();
   const token = crypto.randomBytes(32).toString("hex");
@@ -140,12 +134,6 @@ const sendFiveConfirmationEmails = async (req, res) => {
   const subject = body.subject || process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";
   const results = [];
 
-  if (!validateEmail(email)) {
-    return res.status(400).json({
-      success: false,
-      error: "Email khong hop le",
-    });
-  }
 
   // Đẩy nhiều event send-mail lên Redpanda (BullMQ worker sẽ xử lý ngầm)
   for (let index = 1; index <= count; index += 1) {
