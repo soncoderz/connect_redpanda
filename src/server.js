@@ -1,7 +1,6 @@
 require("dotenv").config();
 const express = require("express");
 const { connectProducer } = require("./kafka/producer");
-const { startMailConsumer } = require("./kafka/mail-consumer");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -37,16 +36,15 @@ app.use((err, req, res, next) => {
 
 const start = async () => {
   await connectProducer();
-  await startMailConsumer();
 
   app.listen(PORT, () => {
-    console.log("Redpanda Connect Backend");
+    console.log("=== API Server (chi nhan request, day event) ===");
     console.log(`Server  : http://localhost:${PORT}`);
     console.log("Health  : GET  /health");
     console.log("Publish : POST /api/publish/:topic");
     console.log("Users   : POST /api/users | POST /api/users/register");
     console.log("Confirm : GET  /api/users/confirm?userId=...&token=...");
-    console.log("Mail x5 : POST /api/users/send-five-mails");
+    console.log("================================================");
   });
 };
 

@@ -41,57 +41,57 @@ const registerUser = async (req, res) => {
   const body = req.body || {};
   const email = String(body.email || "").trim().toLowerCase();
   const name = body.name || body.fullName || body.username || email;
-
-
-
-  const userId = body.id || crypto.randomUUID();
-  const token = crypto.randomBytes(32).toString("hex");
-  const mailRequestId = crypto.randomUUID();
   const subject = process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";
-  const userEvent = createUserEvent({ body, userId, email, name, token });
+  const results = [];
 
-  // 1. Gửi user event lên Redpanda
+  console.log(`[Register] Bat dau dang ky 50 lan cho email: ${email}`);
+
   try {
-    await sendMessage(USERS_TOPIC, userEvent);
+    for (let index = 1; index <= 50; index++) {
+      const userId = crypto.randomUUID();
+      const token = crypto.randomBytes(32).toString("hex");
+      const mailRequestId = crypto.randomUUID();
+      
+      const userEvent = createUserEvent({ body, userId, email, name, token });
+
+      // 1. Gửi user event lên Redpanda
+      await sendMessage(USERS_TOPIC, userEvent);
+
+      // 2. Đẩy event send-mail lên Redpanda
+      const sendMailEvent = {
+        id: mailRequestId,
+        eventType: "send_confirmation",
+        userId,
+        email,
+        name,
+        token,
+        subject,
+        sequence: index,
+        count: 50,
+        eventTime: new Date().toISOString(),
+      };
+
+      await sendMessage(SEND_MAIL_TOPIC, sendMailEvent);
+
+      results.push({
+        sequence: index,
+        userId,
+        mailRequestId
+      });
+    }
   } catch (err) {
-    console.error("[Users] Khong the gui user event:", err.message);
+    console.error("[Users] Loi trong qua trinh dang ky 50 lan:", err.message);
     return res.status(500).json({
       success: false,
-      error: "Khong the tao user tren Redpanda",
+      error: "Loi he thong khi dang ky so luong lon",
       detail: err.message,
     });
   }
 
-  // 2. Đẩy event send-mail lên Redpanda (BullMQ worker sẽ xử lý ngầm)
-  try {
-    const sendMailEvent = {
-      id: mailRequestId,
-      eventType: "send_confirmation",
-      userId,
-      email,
-      name,
-      token,
-      subject,
-      eventTime: new Date().toISOString(),
-    };
-
-    await sendMessage(SEND_MAIL_TOPIC, sendMailEvent);
-  } catch (err) {
-    console.error("[Users] Khong the gui send-mail event:", err.message);
-    return res.status(202).json({
-      success: true,
-      message: "User da duoc tao, nhung khong the day event gui mail vao Redpanda.",
-      userId,
-      mailError: err.message,
-    });
-  }
-
-  // 3. Trả response ngay, không chờ gửi mail
   return res.status(201).json({
     success: true,
-    message: "Tao user thanh cong. Mail xac nhan dang duoc xu ly .",
-    userId,
-    mailRequestId,
+    message: "Da tao 50 users va day 50 event gui mail vao Redpanda.",
+    results,
   });
 };
 
