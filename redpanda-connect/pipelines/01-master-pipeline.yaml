@@ -16,6 +16,7 @@ input:
 
 # PIPELINE: Xử lý trung gian trước khi ghi vào database
 pipeline:
+  # threads: 10
   processors:
     - bloblang: |
         root = this                              # Giữ nguyên toàn bộ dữ liệu gốc

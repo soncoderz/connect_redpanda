@@ -19,7 +19,7 @@ services:
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health -X brokers=redpanda:9092 | grep -E 'Healthy:.+true'"]
+      test: [ "CMD-SHELL", "rpk cluster health -X brokers=redpanda:9092 | grep -E 'Healthy:.+true'" ]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -42,16 +42,16 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
+    entrypoint: [ "/bin/sh", "-c" ]
     command: >
       "rpk topic create users -X brokers=redpanda:9092 || true;
-       rpk topic create send-mail -p 2 -X brokers=redpanda:9092 || true;
+       rpk topic create send-mail -p 4 -X brokers=redpanda:9092 || true;
        rpk topic create mail-logs -X brokers=redpanda:9092 || true"
 
   redpanda-connect:
     image: docker.redpanda.com/redpandadata/connect:latest
     container_name: redpanda-connect
-    command: ["run", "/connect.yaml"]
+    command: [ "run", "/connect.yaml" ]
     depends_on:
       redpanda-init:
         condition: service_completed_successfully
@@ -59,7 +59,6 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./redpanda-connect/pipelines/01-master-pipeline.yaml:/connect.yaml:ro
-
 
 volumes:
   redpanda-data:

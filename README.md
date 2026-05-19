@@ -117,6 +117,17 @@ Ví dụ JSON gửi từ Postman:
   "status": "from_postman"
 }
 ```
+# 1. Xóa topic cũ (Sẽ mất tin nhắn đang chờ nếu có)
+docker exec redpanda rpk topic delete send-mail
+
+# 2. Tạo lại topic mới với 1 partition
+docker exec redpanda rpk topic create send-mail -p 1
+
+
+# tăng partition
+docker exec redpanda rpk topic add-partitions send-mail -n 3
+
+
 
 Sau khi qua API, event được đẩy vào Redpanda có dạng:
 
@@ -1217,3 +1228,48 @@ Tạo user
 ```
 
 *Được xây dựng với Node.js, KafkaJS, Redpanda, Redpanda Connect, MongoDB và Nodemailer.*
+
+
+## 📦 Cơ Chế Phân Chia Và Xử Lý Partition Trong Redpanda
+
+Sự phân chia này hoạt động theo 2 quy luật rất rõ ràng về **thứ tự nhận việc** (phía Producer) và **thứ tự xử lý** (phía Consumer):
+
+### 1. Phân chia tin nhắn vào Partition (Phía Producer)
+Khi Server gửi tin nhắn lên Redpanda, việc quyết định tin nhắn chui vào Partition nào sẽ dựa vào `key` (khóa) của tin nhắn đó:
+
+*   **Không truyền `key` (Mặc định):**
+    Redpanda tự động phân phối đều theo cơ chế **Round-Robin** (xoay vòng):
+    *   *Event 1* ➡️ Partition 0
+    *   *Event 2* ➡️ Partition 1
+    *   *Event 3* ➡️ Partition 2
+    *   *... (lặp lại liên tục)*
+    Redpanda sẽ băm (hash) giá trị của `key` ra một con số để chọn partition tương ứng.
+    *Giải thích chi tiết:* 
+    Redpanda sử dụng thuật toán băm (thường là MurmurHash2) và áp dụng công thức chia lấy dư:
+    ```text
+    Chỉ số Partition = MurmurHash2(key) % Tổng số Partitions
+    ```
+    Vì hàm băm của cùng một giá trị `key` luôn trả về một số cố định, nên kết quả phép chia lấy dư của nó với tổng số partition sẽ luôn luôn trả về cùng một chỉ số partition (ví dụ: luôn ra Partition 2).
+    > [!IMPORTANT]
+    > **Quy tắc:** Tất cả các event có cùng giá trị `key` (ví dụ: chung một `userId`) sẽ **luôn luôn** được đẩy vào cùng một Partition.
+    > 
+    > *Mục đích:* Đảm bảo chuỗi hành động của một User (Đăng ký ➡️ Gửi mail ➡️ Xác thực) luôn nằm chung một luồng, tránh bị đảo lộn trình tự thời gian xử lý.
+
+---
+
+### 2. Thứ tự xử lý tin nhắn của các Worker (Phía Consumer)
+
+#### A. Trong phạm vi 1 Partition (Thứ tự tuyệt đối - FIFO)
+Redpanda cam kết thứ tự xử lý nghiêm ngặt theo nguyên tắc **First In, First Out** (Vào trước - Ra trước):
+*   Tin nhắn nào ghi vào phân vùng trước (có offset nhỏ hơn) bắt buộc phải được xử lý trước. Không có chuyện nhảy cóc hay tranh lượt.
+*   *Ví dụ:* Nếu Partition 0 chứa các tin nhắn theo thứ tự `[1, 3, 5]`, Worker sẽ xử lý lần lượt `1` ➡️ `3` ➡️ `5`.
+
+#### B. Giữa các Partition khác nhau (Không đảm bảo thứ tự)
+Không có sự ràng buộc hay cam kết thứ tự xử lý giữa các partition khác nhau:
+*   *Ví dụ:* Worker A đọc Partition 0 (tin `1`, `3`), Worker B đọc Partition 1 (tin `2`, `4`). Có khả năng Worker B xử lý tin `2` và `4` xong xuôi trước cả khi Worker A bắt đầu hoặc hoàn thành tin `1`.
+
+---
+
+### 💡 Tóm lại (Best Practices)
+*   **Để tối ưu tốc độ (Max Throughput):** Chia thành nhiều Partitions, chạy nhiều Workers song song và không cần truyền `key` (để Redpanda tự động phân phối đều tải cho các Worker).
+*   **Để bảo toàn trình tự (Strict Ordering):** Bắt buộc phải cấu hình truyền `key` (chính là `userId`) khi gửi tin nhắn. Tất cả các event của user đó sẽ đi vào cùng 1 partition và được xử lý theo đúng trình tự trước sau.

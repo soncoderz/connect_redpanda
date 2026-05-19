@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "produce": "node scripts/test-produce.js",
     "worker": "node src/worker.js",
+    "benchmark": "node scripts/benchmark.js",
     "test:all": "node scripts/test-all.js"
   },
   "dependencies": {
