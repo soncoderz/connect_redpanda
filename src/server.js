@@ -1,9 +1,24 @@
 require("dotenv").config();
 const express = require("express");
 const { connectProducer } = require("./kafka/producer");
+const { createBullBoard } = require("@bull-board/api");
+const { BullMQAdapter } = require("@bull-board/api/bullMQAdapter");
+const { ExpressAdapter } = require("@bull-board/express");
+const { Queue } = require("bullmq");
+const { redisConnection } = require("./config/redis");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// BullMQ Dashboard
+const mailQueue = new Queue("mail-queue", { connection: redisConnection });
+const serverAdapter = new ExpressAdapter();
+serverAdapter.setBasePath("/admin/queues");
+
+createBullBoard({
+  queues: [new BullMQAdapter(mailQueue)],
+  serverAdapter,
+});
 
 app.use(express.json());
 
@@ -15,6 +30,7 @@ app.get("/health", (req, res) => {
   });
 });
 
+app.use("/admin/queues", serverAdapter.getRouter());
 app.use("/api/publish", require("./routes/publish.routes"));
 app.use("/api/users", require("./routes/users.routes"));
 
@@ -39,6 +55,7 @@ const start = async () => {
   app.listen(PORT, () => {
     console.log("Redpanda Connect Backend");
     console.log(`Server  : http://localhost:${PORT}`);
+    console.log(`BullMQ  : http://localhost:${PORT}/admin/queues`);
     console.log("Health  : GET  /health");
     console.log("Publish : POST /api/publish/:topic");
     console.log("Users   : POST /api/users | POST /api/users/register");

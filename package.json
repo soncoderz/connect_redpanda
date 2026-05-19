@@ -12,6 +12,8 @@
     "test:all": "node scripts/test-all.js"
   },
   "dependencies": {
+    "@bull-board/api": "^7.1.5",
+    "@bull-board/express": "^7.1.5",
     "bullmq": "^5.76.10",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
