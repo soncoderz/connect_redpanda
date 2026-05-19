@@ -45,7 +45,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: >
       "rpk topic create users -X brokers=redpanda:9092 || true;
-       rpk topic create send-mail -X brokers=redpanda:9092 || true;
+       rpk topic create send-mail -p 2 -X brokers=redpanda:9092 || true;
        rpk topic create mail-logs -X brokers=redpanda:9092 || true"
 
   redpanda-connect:

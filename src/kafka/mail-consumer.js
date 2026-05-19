@@ -18,7 +18,7 @@ const startMailConsumer = async () => {
   await consumer.subscribe({ topic: SEND_MAIL_TOPIC, fromBeginning: true });
 
   await consumer.run({
-    eachMessage: async ({ message }) => {
+    eachMessage: async ({ topic, partition, message }) => {
       const data = JSON.parse(message.value.toString());
       const {
         id: mailRequestId,
@@ -31,7 +31,7 @@ const startMailConsumer = async () => {
         count,
       } = data;
 
-      console.log(`[MailConsumer] Nhan event gui mail: ${mailRequestId} -> ${email}`);
+      console.log(`[MailConsumer] [P${partition}] Nhan event gui mail: ${mailRequestId} -> ${email}`);
 
       // 1. Kiểm tra email hợp lệ
       if (!validateEmail(email)) {

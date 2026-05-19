@@ -89,7 +89,7 @@ const registerUser = async (req, res) => {
   // 3. Trả response ngay, không chờ gửi mail
   return res.status(201).json({
     success: true,
-    message: "Tao user thanh cong. Mail xac nhan dang duoc xu ly .",
+    message: "Tao user thanh cong. Mail xac nhan dang duoc xu ly ngam.",
     userId,
     mailRequestId,
   });

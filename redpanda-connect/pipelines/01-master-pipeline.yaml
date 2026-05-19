@@ -11,7 +11,7 @@ input:
     topics:
       - users                # Topic chứa event tạo/cập nhật user
       - mail-logs            # Topic chứa kết quả gửi mail (thành công / thất bại)
-    consumer_group: simple-connect-group  # Tên nhóm consumer (để Redpanda biết đã đọc đến đâu)
+    consumer_group: redpanda-connect-group  # Tên nhóm consumer (để Redpanda biết đã đọc đến đâu)
     start_from_oldest: true              # Đọc lại từ đầu nếu chưa có offset
 
 # PIPELINE: Xử lý trung gian trước khi ghi vào database
