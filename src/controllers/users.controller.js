@@ -125,63 +125,95 @@ const confirmUser = async (req, res) => {
   });
 };
 
-// const sendFiveConfirmationEmails = async (req, res) => {
-//   const body = req.body || {};
-//   const email = String(body.email || body.to || "").trim().toLowerCase();
-//   const name = body.name || body.fullName || body.username || email;
-//   const userId = body.userId || body.id || crypto.randomUUID();
-//   const count = parseMailCount(body.count);
-//   const subject = body.subject || process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";
-//   const results = [];
+// =====================================================================
+// CẬP NHẬT THÔNG TIN USER
+// PUT /api/users/:id
+// Body: { name?, email?, status? } — chỉ cần truyền trường muốn sửa
+// =====================================================================
+const updateUser = async (req, res) => {
+  const userId = req.params.id;
 
+  if (!userId) {
+    return res.status(400).json({
+      success: false,
+      error: "Thieu userId trong URL (PUT /api/users/:id)",
+    });
+  }
 
-//   // Đẩy nhiều event send-mail lên Redpanda (BullMQ worker sẽ xử lý ngầm)
-//   for (let index = 1; index <= count; index += 1) {
-//     const token = crypto.randomBytes(32).toString("hex");
-//     const mailRequestId = crypto.randomUUID();
+  const body = req.body || {};
+  const safeBody = sanitizeUserPayload(body);
 
-//     try {
-//       const sendMailEvent = {
-//         id: mailRequestId,
-//         eventType: "send_confirmation",
-//         userId,
-//         email,
-//         name,
-//         token,
-//         subject,
-//         sequence: index,
-//         count,
-//         eventTime: new Date().toISOString(),
-//       };
+  // Tạo event update và gửi vào Redpanda
+  const event = {
+    ...safeBody,
+    id: userId,
+    eventType: "update",
+    eventTime: new Date().toISOString(),
+  };
 
-//       await sendMessage(SEND_MAIL_TOPIC, sendMailEvent);
+  try {
+    await sendMessage(USERS_TOPIC, event);
+  } catch (err) {
+    console.error("[Users] Khong the gui update event:", err.message);
+    return res.status(500).json({
+      success: false,
+      error: "Khong the gui event cap nhat user len Redpanda",
+      detail: err.message,
+    });
+  }
 
-//       results.push({
-//         sequence: index,
-//         status: "queued",
-//         mailRequestId,
-//       });
-//     } catch (err) {
-//       results.push({
-//         sequence: index,
-//         status: "queue_failed",
-//         error: err.message,
-//       });
-//     }
-//   }
+  return res.json({
+    success: true,
+    message: "Da gui event cap nhat user vao Redpanda.",
+    userId,
+    updatedFields: Object.keys(safeBody),
+  });
+};
 
-//   return res.json({
-//     success: true,
-//     message: `Da day ${count} event gui mail vao Redpanda. BullMQ dang xu ly ngam.`,
-//     userId,
-//     results,
-//   });
-// };
+// =====================================================================
+// XÓA USER
+// DELETE /api/users/:id
+// Không cần body — chỉ cần truyền userId trong URL
+// =====================================================================
+const deleteUser = async (req, res) => {
+  const userId = req.params.id;
+
+  if (!userId) {
+    return res.status(400).json({
+      success: false,
+      error: "Thieu userId trong URL (DELETE /api/users/:id)",
+    });
+  }
+
+  const event = {
+    id: userId,
+    eventType: "delete",
+    eventTime: new Date().toISOString(),
+  };
+
+  try {
+    await sendMessage(USERS_TOPIC, event);
+  } catch (err) {
+    console.error("[Users] Khong the gui delete event:", err.message);
+    return res.status(500).json({
+      success: false,
+      error: "Khong the gui event xoa user len Redpanda",
+      detail: err.message,
+    });
+  }
+
+  return res.json({
+    success: true,
+    message: "Da gui event xoa user vao Redpanda.",
+    userId,
+  });
+};
 
 module.exports = {
   confirmUser,
   registerUser,
-  // sendFiveConfirmationEmails,
+  updateUser,
+  deleteUser,
 };
 
 

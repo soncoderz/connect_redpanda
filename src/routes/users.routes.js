@@ -2,7 +2,8 @@ const { Router } = require("express");
 const {
   confirmUser,
   registerUser,
-  sendFiveConfirmationEmails,
+  updateUser,
+  deleteUser,
 } = require("../controllers/users.controller");
 
 const router = Router();
@@ -13,6 +14,7 @@ const asyncHandler = (handler) => (req, res, next) => {
 router.post("/", asyncHandler(registerUser));
 router.post("/register", asyncHandler(registerUser));
 router.get("/confirm", asyncHandler(confirmUser));
-// router.post("/send-five-mails", asyncHandler(sendFiveConfirmationEmails));
+router.put("/:id", asyncHandler(updateUser));       // PUT /api/users/:id   — Sửa user
+router.delete("/:id", asyncHandler(deleteUser));     // DELETE /api/users/:id — Xóa user
 
 module.exports = router;
