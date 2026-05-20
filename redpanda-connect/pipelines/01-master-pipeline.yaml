@@ -40,18 +40,25 @@ output:
               INSERT INTO users (id, name, email, status)
               VALUES ($1, $2, $3, $4)
               ON CONFLICT (id) DO UPDATE
-                -- COALESCE: nếu giá trị mới là NULL (event confirm không có name/email)
-                -- thì giữ nguyên giá trị cũ đang có trong bảng
+                -- GIẢI THÍCH COALESCE & EXCLUDED:
+                -- 1. EXCLUDED đại diện cho tập dữ liệu mới đang cố gắng INSERT vào.
+                -- 2. COALESCE(gia_tri_1, gia_tri_2, ...) sẽ lấy giá trị KHÁC NULL đầu tiên từ trái qua phải.
+                -- 3. Khi Đăng ký: Sự kiện chứa đầy đủ name và email -> EXCLUDED.name khác NULL -> Cập nhật name mới.
+                -- 4. Khi Xác nhận (Confirm): Sự kiện chỉ chứa id và status (name/email là NULL) -> EXCLUDED.name là NULL ->
+                --    COALESCE sẽ chọn users.name (giá trị hiện tại đang nằm dưới database) để ghi đè ngược lại -> Không bị mất thông tin cũ.
                 SET name   = COALESCE(EXCLUDED.name,   users.name),
                     email  = COALESCE(EXCLUDED.email,  users.email),
                     status = COALESCE(EXCLUDED.status, users.status);
             args_mapping: |
               root = [
-                this.id,      # $1 -> cột id
-                this.name,    # $2 -> cột name  (NULL nếu là event confirm)
-                this.email,   # $3 -> cột email (NULL nếu là event confirm)
-                this.status   # $4 -> cột status
+                this.id,      # $1 -> Cột id (Luôn có giá trị UUID)
+                this.name,    # $2 -> Cột name (Sẽ là NULL nếu tin nhắn từ Kafka không có trường .name)
+                this.email,   # $3 -> Cột email (Sẽ là NULL nếu tin nhắn từ Kafka không có trường .email)
+                this.status   # $4 -> Cột status (Luôn có giá trị trạng thái mới)
               ]
+           
+
+
 
       # --- CASE 2: Dữ liệu từ topic "mail-logs" → ghi vào bảng mail_logs ---
       - check: 'this._meta.topic == "mail-logs"'
