@@ -15,11 +15,11 @@ const sendMessage = async (topic, message, key = null) => {
   };
 
   // Dùng key truyền vào hoặc lấy key từ thuộc tính của message nếu có
-  const messageKey = key || message.key || null;
-  if (messageKey) {
-    kafkaMessage.key = String(messageKey);
-  }
-
+      // const messageKey = key || message.key || null;
+      // if (messageKey) {
+      //   kafkaMessage.key = String(messageKey);
+      // } 
+  const messageKey = key || null;
   await producer.send({
     topic,
     messages: [kafkaMessage],
