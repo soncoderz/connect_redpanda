@@ -122,3 +122,73 @@ output:
                 this.status,                 # $4 -> cột status ("success" hoặc "failed")
                 this.error.message | ""      # $5 -> cột error (nếu không có lỗi thì để rỗng "")
               ]
+              
+
+
+
+
+
+
+# thêm sửa xóa 
+
+              # --- CASE 1: Dữ liệu từ topic "users" ---
+      - check: 'this._meta.topic == "users"'
+        output:
+          # Sử dụng switch lồng bên trong để phân loại hành động
+          switch:
+            cases:
+
+              # 1. HÀNH ĐỘNG: THÊM MỚI (eventType == "add")
+              - check: 'this.eventType == "add"'
+                output:
+                  sql_raw:
+                    driver: postgres
+                    dsn: postgres://postgres:123456@host.docker.internal:5432/app?sslmode=disable
+                    query: |
+                      INSERT INTO users (id, name, email, status)
+                      VALUES ($1, $2, $3, $4)
+                      ON CONFLICT (id) DO NOTHING; # Tránh lỗi trùng khóa nếu tin nhắn bị gửi lặp
+                    args_mapping: |
+                      root = [
+                        this.id,
+                        this.name,
+                        this.email,
+                        this.status
+                      ]
+
+              # 2. HÀNH ĐỘNG: CẬP NHẬT / SỬA (eventType == "update")
+              - check: 'this.eventType == "update"'
+                output:
+                  sql_raw:
+                    driver: postgres
+                    dsn: postgres://postgres:123456@host.docker.internal:5432/app?sslmode=disable
+                    query: |
+                      UPDATE users
+                      SET name   = COALESCE($2, name),   # Nếu giá trị mới gửi sang là NULL, giữ nguyên giá trị cũ trong DB
+                          email  = COALESCE($3, email),
+                          status = COALESCE($4, status)
+                      WHERE id = $1;
+                    args_mapping: |
+                      root = [
+                        this.id,
+                        this.name,
+                        this.email,
+                        this.status
+                      ]
+
+              # 3. HÀNH ĐỘNG: XÓA (eventType == "delete")
+              - check: 'this.eventType == "delete"'
+                output:
+                  sql_raw:
+                    driver: postgres
+                    dsn: postgres://postgres:123456@host.docker.internal:5432/app?sslmode=disable
+                    query: |
+                      -- Bạn có thể chọn Hard Delete (Xóa hẳn khỏi DB):
+                      DELETE FROM users WHERE id = $1;
+                      
+                      -- Hoặc Soft Delete (Đánh dấu xóa để giữ lại lịch sử):
+                      -- UPDATE users SET status = 'deleted', deleted_at = NOW() WHERE id = $1;
+                    args_mapping: |
+                      root = [
+                        this.id
+                      ]
