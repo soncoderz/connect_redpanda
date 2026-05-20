@@ -39,59 +39,123 @@ const createUserEvent = ({ body, userId, email, name, token }) => {
 
 const registerUser = async (req, res) => {
   const body = req.body || {};
-  const email = String(body.email || "").trim().toLowerCase();
-  const name = body.name || body.fullName || body.username || email;
+  const count = body.count ? Math.min(Math.max(parseInt(body.count) || 1, 1), 100) : 1;
   const key = body.key || null;
 
-  const userId = crypto.randomUUID();
-  const token = crypto.randomBytes(32).toString("hex");
-  const mailRequestId = crypto.randomUUID();
-  const subject = process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";
-  const userEvent = createUserEvent({ body, userId, email, name, token });
+  const results = [];
 
-  // 1. Gửi user event lên Redpanda
-  try {
-    await sendMessage(USERS_TOPIC, userEvent, key || userId);
-  } catch (err) {
-    console.error("[Users] Khong the gui user event:", err.message);
-    return res.status(500).json({
-      success: false,
-      error: "Khong the tao user tren Redpanda",
-      detail: err.message,
-    });
+  for (let i = 1; i <= count; i++) {
+    let email = String(body.email || "").trim().toLowerCase();
+    let name = body.name || body.fullName || body.username || email;
+
+    if (count > 1) {
+      const randomId = crypto.randomUUID().slice(0, 8);
+      const computedKey = key || null;
+
+      email = email ? email.replace("@", `_${randomId}_${i}@`) : `user_${randomId}_${i}@example.com`;
+      name = `${name} Bulk ${i}`;
+
+      const userId = crypto.randomUUID();
+      const token = crypto.randomBytes(32).toString("hex");
+      const mailRequestId = crypto.randomUUID();
+      const subject = process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";
+      const userEvent = createUserEvent({ body, userId, email, name, token });
+
+      try {
+        await sendMessage(USERS_TOPIC, userEvent, computedKey || userId);
+
+        const sendMailEvent = {
+          id: mailRequestId,
+          eventType: "send_confirmation",
+          userId,
+          email,
+          name,
+          token,
+          subject,
+          eventTime: new Date().toISOString(),
+        };
+
+        await sendMessage(SEND_MAIL_TOPIC, sendMailEvent, computedKey || userId);
+
+        results.push({
+          email,
+          userId,
+          mailRequestId,
+          key: computedKey,
+          status: "success",
+        });
+      } catch (err) {
+        results.push({
+          email,
+          key: computedKey,
+          status: "failed",
+          error: err.message,
+        });
+      }
+    } else {
+      const userId = crypto.randomUUID();
+      const token = crypto.randomBytes(32).toString("hex");
+      const mailRequestId = crypto.randomUUID();
+      const subject = process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";
+      const userEvent = createUserEvent({ body, userId, email, name, token });
+
+      try {
+        await sendMessage(USERS_TOPIC, userEvent, key || userId);
+      } catch (err) {
+        console.error("[Users] Khong the gui user event:", err.message);
+        return res.status(500).json({
+          success: false,
+          error: "Khong the tao user tren Redpanda",
+          detail: err.message,
+        });
+      }
+
+      try {
+        const sendMailEvent = {
+          id: mailRequestId,
+          eventType: "send_confirmation",
+          userId,
+          email,
+          name,
+          token,
+          subject,
+          eventTime: new Date().toISOString(),
+        };
+
+        await sendMessage(SEND_MAIL_TOPIC, sendMailEvent, key || userId);
+        results.push({
+          email,
+          userId,
+          mailRequestId,
+          key: key || userId,
+          status: "success",
+        });
+      } catch (err) {
+        console.error("[Users] Khong the gui send-mail event:", err.message);
+        return res.status(202).json({
+          success: true,
+          message: "User da duoc tao, nhung khong the day event gui mail vao Redpanda.",
+          userId,
+          mailError: err.message,
+        });
+      }
+    }
   }
 
-  // 2. Đẩy event send-mail lên Redpanda (BullMQ worker sẽ xử lý ngầm)
-  try {
-    const sendMailEvent = {
-      id: mailRequestId,
-      eventType: "send_confirmation",
-      userId,
-      email,
-      name,
-      token,
-      subject,
-      eventTime: new Date().toISOString(),
-    };
-
-    await sendMessage(SEND_MAIL_TOPIC, sendMailEvent, key || userId);
-  } catch (err) {
-    console.error("[Users] Khong the gui send-mail event:", err.message);
-    return res.status(202).json({
+  if (count > 1) {
+    return res.status(201).json({
       success: true,
-      message: "User da duoc tao, nhung khong the day event gui mail vao Redpanda.",
-      userId,
-      mailError: err.message,
+      message: `Da tao hang loat ${count} users thanh cong.`,
+      results,
+    });
+  } else {
+    return res.status(201).json({
+      success: true,
+      message: "Tao user thanh cong. Mail xac nhan dang duoc xu ly ngam.",
+      userId: results[0].userId,
+      mailRequestId: results[0].mailRequestId,
     });
   }
-
-  // 3. Trả response ngay, không chờ gửi mail
-  return res.status(201).json({
-    success: true,
-    message: "Tao user thanh cong. Mail xac nhan dang duoc xu ly ngam.",
-    userId,
-    mailRequestId,
-  });
 };
 
 const confirmUser = async (req, res) => {

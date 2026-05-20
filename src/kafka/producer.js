@@ -49,7 +49,8 @@ const sendMessage = async (topic, message, key = null) => {
     topic,
     messages: [kafkaMessage],
   });
-  console.log(`[Producer] Da gui message vao topic "${topic}" (key: ${messageKey || "none"}):`, message.id);
+  console.log(`[Producer] Da gui message vao topic "${topic}" (key: none):`, message.id);
+  // console.log(`[Producer] Da gui message vao topic "${topic}" (key: ${messageKey || "none"}):`, message.id);
 };
 
 module.exports = { connectProducer, sendMessage };

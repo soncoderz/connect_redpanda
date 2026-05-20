@@ -14,7 +14,7 @@ const asyncHandler = (handler) => (req, res, next) => {
 router.post("/", asyncHandler(registerUser));
 router.post("/register", asyncHandler(registerUser));
 router.get("/confirm", asyncHandler(confirmUser));
-router.put("/:id", asyncHandler(updateUser));       
-router.delete("/:id", asyncHandler(deleteUser));    
+router.put("/:id", asyncHandler(updateUser));
+router.delete("/:id", asyncHandler(deleteUser));
 
 module.exports = router;
