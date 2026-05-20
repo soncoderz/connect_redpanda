@@ -10,8 +10,8 @@ const customPartitioner = () => {
     const numPartitions = partitionMetadata.length;
 
     
-    if (key && ["A", "B", "C"].includes(key) && numPartitions > 3) {
-      return 3;
+    if (key && ["A", "B", "C"].includes(key) && numPartitions > 1) {
+      return 1;
     }
 
     if (key && ["D"].includes(key) && numPartitions > 0) {
