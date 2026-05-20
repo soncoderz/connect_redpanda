@@ -9,18 +9,22 @@ const connectProducer = async () => {
   console.log("[Producer] Da ket noi Redpanda");
 };
 
-// Gửi 1 message vào topic
-const sendMessage = async (topic, message) => {
+const sendMessage = async (topic, message, key = null) => {
+  const kafkaMessage = {
+    value: JSON.stringify(message),
+  };
+
+  // Dùng key truyền vào hoặc lấy key từ thuộc tính của message nếu có
+  const messageKey = key || message.key || null;
+  if (messageKey) {
+    kafkaMessage.key = String(messageKey);
+  }
+
   await producer.send({
     topic,
-    messages: [
-      {
-        // key: message.id, // dùng id làm key để cùng patient vào cùng partition
-        value: JSON.stringify(message),
-      },
-    ],
+    messages: [kafkaMessage],
   });
-  console.log(`[Producer] Da gui message vao topic "${topic}":`, message.id);
+  console.log(`[Producer] Da gui message vao topic "${topic}" (key: ${messageKey || "none"}):`, message.id);
 };
 
 module.exports = { connectProducer, sendMessage };

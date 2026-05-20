@@ -5,6 +5,7 @@ const publishToTopic = async (req, res) => {
   try {
     const { topic } = req.params;
     const body = req.body || {};
+    const key = body.key || null;
 
     const event = {
       ...body,
@@ -13,7 +14,7 @@ const publishToTopic = async (req, res) => {
       eventTime: new Date().toISOString(),
     };
 
-    await sendMessage(topic, event);
+    await sendMessage(topic, event, key);
 
     res.status(202).json({
       success: true,

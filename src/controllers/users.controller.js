@@ -41,10 +41,9 @@ const registerUser = async (req, res) => {
   const body = req.body || {};
   const email = String(body.email || "").trim().toLowerCase();
   const name = body.name || body.fullName || body.username || email;
+  const key = body.key || null;
 
-
-
-  const userId = "a" ;
+  const userId = crypto.randomUUID();
   const token = crypto.randomBytes(32).toString("hex");
   const mailRequestId = crypto.randomUUID();
   const subject = process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";
@@ -52,7 +51,7 @@ const registerUser = async (req, res) => {
 
   // 1. Gửi user event lên Redpanda
   try {
-    await sendMessage(USERS_TOPIC, userEvent);
+    await sendMessage(USERS_TOPIC, userEvent, key || userId);
   } catch (err) {
     console.error("[Users] Khong the gui user event:", err.message);
     return res.status(500).json({
@@ -75,7 +74,7 @@ const registerUser = async (req, res) => {
       eventTime: new Date().toISOString(),
     };
 
-    await sendMessage(SEND_MAIL_TOPIC, sendMailEvent);
+    await sendMessage(SEND_MAIL_TOPIC, sendMailEvent, key || userId);
   } catch (err) {
     console.error("[Users] Khong the gui send-mail event:", err.message);
     return res.status(202).json({
@@ -116,7 +115,7 @@ const confirmUser = async (req, res) => {
     emailVerificationToken: token,
   };
 
-  await sendMessage(USERS_TOPIC, event);
+  await sendMessage(USERS_TOPIC, event, userId);
 
   return res.json({
     success: true,
@@ -141,6 +140,7 @@ const updateUser = async (req, res) => {
   }
 
   const body = req.body || {};
+  const key = body.key || null;
   const safeBody = sanitizeUserPayload(body);
 
   // Tạo event update và gửi vào Redpanda
@@ -152,7 +152,7 @@ const updateUser = async (req, res) => {
   };
 
   try {
-    await sendMessage(USERS_TOPIC, event);
+    await sendMessage(USERS_TOPIC, event, key || userId);
   } catch (err) {
     console.error("[Users] Khong the gui update event:", err.message);
     return res.status(500).json({
@@ -192,7 +192,7 @@ const deleteUser = async (req, res) => {
   };
 
   try {
-    await sendMessage(USERS_TOPIC, event);
+    await sendMessage(USERS_TOPIC, event, userId);
   } catch (err) {
     console.error("[Users] Khong the gui delete event:", err.message);
     return res.status(500).json({

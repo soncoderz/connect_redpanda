@@ -53,7 +53,7 @@ const publishMailLog = async ({
     failedAt: status === "failed" ? now : null,
   };
 
-  await sendMessage(MAIL_LOG_TOPIC, event);
+  await sendMessage(MAIL_LOG_TOPIC, event, userId);
   return event;
 };
 
