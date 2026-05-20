@@ -44,7 +44,7 @@ const registerUser = async (req, res) => {
 
 
 
-  const userId = body.id || crypto.randomUUID();
+  const userId = "a" ;
   const token = crypto.randomBytes(32).toString("hex");
   const mailRequestId = crypto.randomUUID();
   const subject = process.env.MAIL_CONFIRM_SUBJECT || "Xac nhan tai khoan";

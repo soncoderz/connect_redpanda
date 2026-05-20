@@ -42,19 +42,23 @@ output:
                   sql_raw:
                     driver: postgres
                     dsn: postgres://postgres:123456@host.docker.internal:5432/app?sslmode=disable
+                    # Thực hiện chèn mới bản ghi vào bảng users
                     query: |
                       INSERT INTO users (id, name, email, status)
                       VALUES ($1, $2, $3, $4)
+                      -- Nếu trùng khóa chính 'id' (xảy ra xung đột), chuyển sang cập nhật (DO UPDATE)
                       ON CONFLICT (id) DO UPDATE
+                        -- COALESCE: nếu giá trị mới (EXCLUDED) là null, giữ nguyên giá trị cũ (users)
                         SET name   = COALESCE(EXCLUDED.name,   users.name),
                             email  = COALESCE(EXCLUDED.email,  users.email),
                             status = COALESCE(EXCLUDED.status, users.status);
+                    # Ánh xạ dữ liệu JSON từ event vào các tham số $1, $2, $3, $4
                     args_mapping: |
                       root = [
-                        this.id,
-                        this.name,
-                        this.email,
-                        this.status
+                        this.id,      # $1 tương ứng với cột id
+                        this.name,    # $2 tương ứng với cột name
+                        this.email,   # $3 tương ứng với cột email
+                        this.status   # $4 tương ứng với cột status
                       ]
 
               # ── CẬP NHẬT: eventType == "update" ──

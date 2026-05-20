@@ -15,7 +15,7 @@ const sendMessage = async (topic, message) => {
     topic,
     messages: [
       {
-        key: message.id, // dùng id làm key để cùng patient vào cùng partition
+        // key: message.id, // dùng id làm key để cùng patient vào cùng partition
         value: JSON.stringify(message),
       },
     ],
